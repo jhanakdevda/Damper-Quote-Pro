@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PROJECT_NAME=Damper Quote Pro
+      - JWT_SECRET_KEY=pune-damper-quote-pro-docker-prod-secret-2026
+      - DATABASE_URL=sqlite:///./damper_quote_pro.db
+      - ALLOWED_ORIGINS=http://localhost:5173,http://localhost:80,http://localhost
+    volumes:
+      - damper_data:/app
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  damper_data:
