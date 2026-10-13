@@ -178,29 +178,29 @@ export default function RatesPage({ user }) {
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
       {/* Page Title */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-[#EAE5DB] dark:border-slate-800 pb-4">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
+            <h1 className="text-2xl font-bold text-[#242826] dark:text-white">
               Company Master Rates & What-If Engine
             </h1>
             {ratesData && (
-              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300 font-mono">
+              <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-[#EEF5F1] text-[#2F4D40] border border-[#D5E5DC] dark:bg-blue-900/40 dark:text-blue-300 font-mono">
                 Active: v{ratesData.version_number}
               </span>
             )}
           </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          <p className="text-xs text-[#5C6460] dark:text-slate-400 mt-1">
             Maintain raw material rates, fabrication benchmarks, and simulate commodity inflation
           </p>
         </div>
 
         {/* Action tabs */}
-        <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl text-xs font-semibold">
+        <div className="flex items-center gap-1.5 bg-[#F4EFE6] dark:bg-slate-800 p-1 rounded-xl text-xs font-semibold border border-[#E8E3D8]">
           <button
             onClick={() => setActiveTab('current')}
             className={`px-3 py-1.5 rounded-lg transition-colors ${
-              activeTab === 'current' ? 'bg-white dark:bg-slate-900 text-blue-600 shadow-sm' : 'text-slate-600 dark:text-slate-400'
+              activeTab === 'current' ? 'bg-white dark:bg-slate-900 text-[#3D6353] shadow-sm' : 'text-[#5C6460] hover:text-[#242826]'
             }`}
           >
             Master Rates
@@ -211,7 +211,7 @@ export default function RatesPage({ user }) {
               runWhatIf();
             }}
             className={`px-3 py-1.5 rounded-lg transition-colors ${
-              activeTab === 'whatif' ? 'bg-white dark:bg-slate-900 text-blue-600 shadow-sm' : 'text-slate-600 dark:text-slate-400'
+              activeTab === 'whatif' ? 'bg-white dark:bg-slate-900 text-[#3D6353] shadow-sm' : 'text-[#5C6460] hover:text-[#242826]'
             }`}
           >
             What-If Simulator
@@ -219,7 +219,7 @@ export default function RatesPage({ user }) {
           <button
             onClick={() => setActiveTab('history')}
             className={`px-3 py-1.5 rounded-lg transition-colors ${
-              activeTab === 'history' ? 'bg-white dark:bg-slate-900 text-blue-600 shadow-sm' : 'text-slate-600 dark:text-slate-400'
+              activeTab === 'history' ? 'bg-white dark:bg-slate-900 text-[#3D6353] shadow-sm' : 'text-[#5C6460] hover:text-[#242826]'
             }`}
           >
             Audit Log ({historyList.length})
@@ -227,7 +227,7 @@ export default function RatesPage({ user }) {
           <button
             onClick={() => setActiveTab('import')}
             className={`px-3 py-1.5 rounded-lg transition-colors ${
-              activeTab === 'import' ? 'bg-white dark:bg-slate-900 text-blue-600 shadow-sm' : 'text-slate-600 dark:text-slate-400'
+              activeTab === 'import' ? 'bg-white dark:bg-slate-900 text-[#3D6353] shadow-sm' : 'text-[#5C6460] hover:text-[#242826]'
             }`}
           >
             Import / Export

@@ -30,13 +30,15 @@ class UserResponse(BaseModel):
 # --- Calculation Schemas ---
 class CalculateRequest(BaseModel):
     # Size limits enforced at runtime via DamperSizeLimits table, not hardcoded here
-    width_mm: float = Field(..., ge=1.0)
-    height_mm: float = Field(..., ge=1.0)
-    depth_mm: float = Field(..., ge=1.0)
+    width_mm: Optional[float] = Field(3000.0, ge=1.0)
+    height_mm: Optional[float] = Field(3000.0, ge=1.0)
+    depth_mm: Optional[float] = Field(450.0, ge=1.0)
     quantity: int = Field(1, ge=1)
     markup_pct: float = Field(10.0, ge=0.0)
-    damper_type: Optional[str] = "rack_and_pinion"  # rack_and_pinion | multi_blade
+    damper_type: Optional[str] = "rack_and_pinion"  # rack_and_pinion | multi_blade | butterfly_valve | knife_gate_valve | ball_valve | globe_valve
+    product_category: Optional[str] = "damper"  # damper | valve
     multi_blade_config: Optional[Dict[str, Any]] = None
+    valve_config: Optional[Dict[str, Any]] = None
     flap_material: Optional[str] = "IS 2062"   # IS 2062 | SS 304L
     actuation_type: Optional[str] = "Electric Actuator"
     rate_overrides: Optional[Dict[str, Any]] = None
@@ -50,13 +52,15 @@ class QuoteCreateRequest(BaseModel):
     customer_email: Optional[str] = None
     customer_phone: Optional[str] = None
     project_name: str
-    width_mm: float = Field(..., ge=1.0)
-    height_mm: float = Field(..., ge=1.0)
-    depth_mm: float = Field(..., ge=1.0)
+    width_mm: Optional[float] = Field(3000.0, ge=1.0)
+    height_mm: Optional[float] = Field(3000.0, ge=1.0)
+    depth_mm: Optional[float] = Field(450.0, ge=1.0)
     quantity: int = Field(1, ge=1)
     markup_pct: float = Field(10.0, ge=0.0)
     damper_type: Optional[str] = "rack_and_pinion"
+    product_category: Optional[str] = "damper"
     multi_blade_config: Optional[Dict[str, Any]] = None
+    valve_config: Optional[Dict[str, Any]] = None
     flap_material: Optional[str] = "IS 2062"
     actuation_type: Optional[str] = "Electric Actuator"
     status: Optional[str] = "Draft"

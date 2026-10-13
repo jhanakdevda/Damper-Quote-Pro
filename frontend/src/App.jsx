@@ -56,7 +56,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans transition-colors duration-150">
+    <div className="min-h-screen bg-[#F9F7F2] text-[#242826] flex flex-col font-sans transition-colors duration-150 selection:bg-[#DEEBE2] selection:text-[#1F3E30]">
       <Navbar
         user={user}
         currentView={currentView}
@@ -85,10 +85,10 @@ export default function App() {
         {currentView === 'damper-admin' && <PartAAdmin user={user} />}
       </main>
 
-      <footer className="bg-white border-t border-slate-200 py-3.5 text-center text-xs text-slate-500">
+      <footer className="bg-[#FFFDFB] border-t border-[#EAE5DB] py-4 text-center text-xs text-[#5C6460]">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span className="font-medium text-slate-700">Damper Quote Pro • Industrial Valve & Damper Costing</span>
-          <span>Pune Valve & Damper Mfg. Co. Pvt. Ltd. • Bhosari, Pune</span>
+          <span className="font-semibold text-[#242826]">Damper Quote Pro • Industrial Valve & Damper Costing</span>
+          <span className="text-[#6E7772]">Pune Valve & Damper Mfg. Co. Pvt. Ltd. • Bhosari, Pune</span>
         </div>
       </footer>
     </div>

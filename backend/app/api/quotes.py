@@ -10,6 +10,7 @@ from app.schemas import CalculateRequest, QuoteCreateRequest, QuoteUpdateRequest
 from app.api.auth import get_current_user
 from app.costing_engine import calculate_damper_cost, safe_eval_condition
 from app.multi_blade_engine import calculate_multi_blade_damper_cost, DEFAULT_MULTI_BLADE_RATES
+from app.valve_engine import calculate_valve_cost, VALVE_TYPES, STANDARD_VALVE_SIZES
 from app.services.excel_service import generate_quote_excel
 from app.services.pdf_service import generate_quote_pdf
 
@@ -88,11 +89,16 @@ def apply_manual_bom_edits(calc_res: Dict[str, Any], bom_edits=None, bom_additio
             continue
         line = source
         line["source_line_index"] = index
-        changed_fields = ("dim_1", "dim_2", "dim_3", "qty", "moc", "material_rate", "plate_labour_rate", "per_piece_machining", "rolling_cost")
+        line["_orig_rm"] = float(source.get("rm_cost") or 0)
+        line["_orig_mfg"] = float(source.get("mfg_cost_total") if source.get("mfg_cost_total") is not None else (source.get("mfg_cost") or 0))
+        line["_orig_total"] = float(source.get("line_total") if source.get("line_total") is not None else (source.get("total_cost") or (line["_orig_rm"] + line["_orig_mfg"])))
+        changed_fields = ("dim_1", "dim_2", "dim_3", "qty", "moc", "material_rate", "plate_labour_rate", "per_piece_machining", "rolling_cost", "line_total")
         changed = any(edit.get(field) is not None for field in changed_fields)
         for field in changed_fields:
-            if edit.get(field) is not None:
+            if edit.get(field) is not None and field != "line_total":
                 line[field] = edit[field]
+        if edit.get("line_total") is not None:
+            line["_custom_line_total"] = edit["line_total"]
         if changed:
             line["is_manually_edited"] = True
             line["edit_note"] = edit.get("edit_note") or "Manual BOM edit"
@@ -117,26 +123,62 @@ def apply_manual_bom_edits(calc_res: Dict[str, Any], bom_edits=None, bom_additio
 
     for line in lines:
         if not line.get("is_manually_edited"):
+            line.pop("_orig_rm", None)
+            line.pop("_orig_mfg", None)
+            line.pop("_orig_total", None)
+            line.pop("_custom_line_total", None)
             continue
-        if line["qty"] < 1 or line["dim_1"] < 0 or line["dim_2"] < 0:
-            raise ValueError("Manual BOM dimensions must be non-negative and quantity must be at least 1")
+        qty = int(line.get("qty") or line.get("quantity") or 1)
+        dim_1 = float(line.get("dim_1") or 0)
+        dim_2 = float(line.get("dim_2") or 0)
         thickness = float(line.get("dim_3") or 0)
-        if line.get("is_round"):
-            line["weight"] = 0.785 * line["dim_1"] ** 2 * line["dim_2"] * 7.85e-6 * line["qty"]
+        if qty < 1 or dim_1 < 0 or dim_2 < 0:
+            raise ValueError("Manual BOM dimensions must be non-negative and quantity must be at least 1")
+        line["qty"] = qty
+        orig_rm = float(line.pop("_orig_rm", line.get("rm_cost") or 0))
+        orig_mfg = float(line.pop("_orig_mfg", line.get("mfg_cost_total") if line.get("mfg_cost_total") is not None else (line.get("mfg_cost") or 0)))
+        orig_total = float(line.pop("_orig_total", line.get("line_total") if line.get("line_total") is not None else (line.get("total_cost") or (orig_rm + orig_mfg))))
+        custom_line_total = line.pop("_custom_line_total", None)
+        if line.get("is_round") and dim_1 > 0 and dim_2 > 0:
+            line["weight"] = 0.785 * dim_1 ** 2 * dim_2 * 7.85e-6 * qty
             line["plate_labour_cost"] = 0.0
+            line["rm_cost"] = line["weight"] * float(line.get("material_rate") or 0)
+            line["mfg_cost_total"] = (float(line.get("plate_labour_cost") or 0) + float(line.get("per_piece_machining") or 0) + float(line.get("rolling_cost") or 0)) * qty
+            line["line_total"] = line["rm_cost"] + line["mfg_cost_total"]
+        elif dim_1 > 0 and dim_2 > 0 and thickness > 0:
+            line["weight"] = dim_1 * dim_2 * thickness * 7.85e-6 * qty
+            line["plate_labour_cost"] = (dim_1 + dim_2) * 2 * thickness * float(line.get("plate_labour_rate") or 0) / 1000
+            line["rm_cost"] = line["weight"] * float(line.get("material_rate") or 0)
+            line["mfg_cost_total"] = (float(line.get("plate_labour_cost") or 0) + float(line.get("per_piece_machining") or 0) + float(line.get("rolling_cost") or 0)) * qty
+            line["line_total"] = line["rm_cost"] + line["mfg_cost_total"]
         else:
-            line["weight"] = line["dim_1"] * line["dim_2"] * thickness * 7.85e-6 * line["qty"]
-            line["plate_labour_cost"] = (line["dim_1"] + line["dim_2"]) * 2 * thickness * line.get("plate_labour_rate", 0) / 1000
-        line["rm_cost"] = line["weight"] * line.get("material_rate", 0)
-        line["mfg_cost_total"] = (line["plate_labour_cost"] + line.get("per_piece_machining", 0) + line.get("rolling_cost", 0)) * line["qty"]
-        line["line_total"] = line["rm_cost"] + line["mfg_cost_total"]
+            base_qty = float(line.get("base_qty") or line.get("quantity") or qty or 1)
+            old_wt = float(line.get("weight") or line.get("total_weight") or 0)
+            if base_qty > 0 and old_wt > 0:
+                line["weight"] = (old_wt / base_qty) * qty
+            line["rm_cost"] = float(line.get("weight") or 0) * float(line.get("material_rate") or 0) if line.get("material_rate") is not None else orig_rm
+            if line.get("per_piece_machining") is not None:
+                line["mfg_cost_total"] = (float(line.get("plate_labour_cost") or 0) + float(line.get("per_piece_machining") or 0) + float(line.get("rolling_cost") or 0)) * qty
+            else:
+                line["mfg_cost_total"] = orig_mfg
+            line["line_total"] = orig_total - orig_rm - orig_mfg + float(line.get("rm_cost") or 0) + float(line.get("mfg_cost_total") or 0)
+        if custom_line_total is not None:
+            try:
+                line["line_total"] = float(custom_line_total)
+            except (TypeError, ValueError):
+                pass
+        line["mfg_cost"] = line.get("mfg_cost_total", orig_mfg)
+        line["total_cost"] = line.get("line_total", orig_total)
 
     if not (bom_edits or bom_additions):
         return False
-    old_rm, old_mfg = calc_res["raw_material_cost"], calc_res["mfg_cost"]
-    old_weight = calc_res["total_weight_kg"]
-    rm_cost = sum(line.get("rm_cost", 0) for line in lines)
-    mfg_cost = sum(line.get("mfg_cost_total", 0) for line in lines)
+    old_rm = calc_res.get("raw_material_cost", 0.0)
+    old_mfg = calc_res.get("mfg_cost", 0.0)
+    old_weight = calc_res.get("total_weight_kg", 0.0)
+    rm_cost = sum(float(line.get("rm_cost") or 0) for line in lines)
+    mfg_cost = sum(float(line.get("mfg_cost_total") if line.get("mfg_cost_total") is not None else (line.get("mfg_cost") or 0)) for line in lines)
+    line_sum = sum(float(line.get("line_total") if line.get("line_total") is not None else (line.get("total_cost") or 0)) for line in lines)
+    custom_fab_delta = line_sum - (rm_cost + mfg_cost)
     calc_res["lines"] = lines
     new_weight = sum(line.get("weight", 0) for line in lines)
     weight_delta = new_weight - old_weight
@@ -147,15 +189,24 @@ def apply_manual_bom_edits(calc_res: Dict[str, Any], bom_edits=None, bom_additio
     fabrication_rate = float((rates or {}).get("fabrication_rate_per_kg", 96.0))
     bought_out_delta = weight_delta * finishing_rate
     fabrication_delta = weight_delta * fabrication_rate
-    calc_res["bought_out_cost"] = round(calc_res["bought_out_cost"] + bought_out_delta, 2)
-    calc_res["fabrication_cost"] = round(calc_res["fabrication_cost"] + fabrication_delta, 2)
-    calc_res["basic_cost"] = round(calc_res["basic_cost"] + rm_cost - old_rm + mfg_cost - old_mfg + bought_out_delta, 2)
-    calc_res["total_cost"] = round(calc_res["basic_cost"] + calc_res["automation_cost"] + calc_res["fabrication_cost"], 2)
+    if "bought_out_cost" in calc_res:
+        calc_res["bought_out_cost"] = round(calc_res["bought_out_cost"] + bought_out_delta, 2)
+    if "fabrication_cost" in calc_res:
+        calc_res["fabrication_cost"] = round(calc_res["fabrication_cost"] + fabrication_delta, 2)
+    if "basic_cost" in calc_res:
+        calc_res["basic_cost"] = round(calc_res["basic_cost"] + rm_cost - old_rm + mfg_cost - old_mfg + bought_out_delta + custom_fab_delta, 2)
+        calc_res["total_cost"] = round(calc_res["basic_cost"] + calc_res.get("automation_cost", 0.0) + calc_res.get("fabrication_cost", 0.0), 2)
+    else:
+        calc_res["total_cost"] = round(rm_cost + mfg_cost + custom_fab_delta + calc_res.get("bought_out_cost", 0.0) + calc_res.get("testing_cost", 0.0) + calc_res.get("finishing_cost", 0.0) + calc_res.get("automation_cost", 0.0), 2)
     calc_res["quoted_price"] = round(calc_res["total_cost"] * (1 + calc_res["markup_pct"] / 100), 2)
     calc_res["margin_pct"] = ((calc_res["quoted_price"] - calc_res["total_cost"]) / calc_res["quoted_price"] * 100) if calc_res["quoted_price"] else 0
-    quantity = calc_res["damper_quantity"]
-    for key in ("total_weight_kg", "raw_material_cost", "mfg_cost", "basic_cost", "total_cost", "quoted_price"):
-        calc_res["batch_totals"][key] = round(calc_res[key] * quantity, 2)
+    quantity = calc_res.get("damper_quantity") or calc_res.get("quantity") or 1
+    if "batch_totals" in calc_res:
+        for key in ("total_weight_kg", "raw_material_cost", "mfg_cost", "total_cost", "quoted_price"):
+            if key in calc_res:
+                calc_res["batch_totals"][key] = round(calc_res[key] * quantity, 2)
+        if "basic_cost" in calc_res and "basic_cost" in calc_res["batch_totals"]:
+            calc_res["batch_totals"]["basic_cost"] = round(calc_res["basic_cost"] * quantity, 2)
     return True
 
 
@@ -219,6 +270,34 @@ def calculate_live(payload: CalculateRequest, db: Session = Depends(get_db)):
     effective_rates = apply_rate_overrides(base_rates, payload.rate_overrides)
     effective_rates["calibration"] = get_calibration_factors(db)
 
+    is_valve = (getattr(payload, "product_category", "damper") == "valve" or 
+                d_type in ("butterfly_valve", "knife_gate_valve", "ball_valve", "globe_valve", "valve") or 
+                bool(payload.valve_config))
+
+    if is_valve:
+        v_config = dict(payload.valve_config or {})
+        if "valve_type" not in v_config:
+            v_config["valve_type"] = d_type if d_type in ("butterfly_valve", "knife_gate_valve", "ball_valve", "globe_valve") else "butterfly_valve"
+        if "size_dn" not in v_config:
+            v_config["size_dn"] = int(payload.width_mm) if (payload.width_mm <= 2000 and payload.width_mm >= 50) else 300
+        try:
+            calc_res = calculate_valve_cost(
+                config=v_config,
+                rates_data=effective_rates,
+                quantity=payload.quantity,
+                markup_pct_override=payload.markup_pct,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        try:
+            calc_res["bom_has_edits"] = apply_manual_bom_edits(calc_res, payload.bom_edits, payload.bom_additions, effective_rates)
+        except (TypeError, ValueError, ArithmeticError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        calc_res["rate_version_id"] = rv_id
+        calc_res["is_custom_rates"] = bool(payload.rate_overrides) or bool(payload.bom_edits)
+        calc_res["accuracy"] = {"verified_size_id": None, "accuracy_label": "Standard Valve Sizing (ASME / EN)", "difference_pct": 0.0}
+        return calc_res
+
     if d_type == "multi_blade":
         mb_config = dict(payload.multi_blade_config or {})
         mb_config.setdefault("width_mm", payload.width_mm)
@@ -280,7 +359,31 @@ def create_quote(
     effective_rates = apply_rate_overrides(base_rates, payload.rate_overrides)
     effective_rates["calibration"] = get_calibration_factors(db)
 
-    if d_type == "multi_blade":
+    is_valve = (getattr(payload, "product_category", "damper") == "valve" or 
+                d_type in ("butterfly_valve", "knife_gate_valve", "ball_valve", "globe_valve", "valve") or 
+                bool(payload.valve_config))
+
+    bom_has_edits = False
+    if is_valve:
+        v_config = dict(payload.valve_config or {})
+        if "valve_type" not in v_config:
+            v_config["valve_type"] = d_type if d_type in ("butterfly_valve", "knife_gate_valve", "ball_valve", "globe_valve") else "butterfly_valve"
+        if "size_dn" not in v_config:
+            v_config["size_dn"] = int(payload.width_mm) if (payload.width_mm <= 2000 and payload.width_mm >= 50) else 300
+        try:
+            calc_res = calculate_valve_cost(
+                config=v_config,
+                rates_data=effective_rates,
+                quantity=payload.quantity,
+                markup_pct_override=payload.markup_pct,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        accuracy = {"verified_size_id": None, "accuracy_label": "Standard Valve Sizing (ASME / EN)", "difference_pct": 0.0}
+        calc_res["accuracy"] = accuracy
+        calc_res["margin_pct"] = round((calc_res["quoted_price"] - calc_res["total_cost"]) / max(1.0, calc_res["quoted_price"]) * 100.0, 2)
+        calc_res["fabrication_cost"] = calc_res.get("testing_cost", 0.0) + calc_res.get("finishing_cost", 0.0)
+    elif d_type == "multi_blade":
         mb_config = dict(payload.multi_blade_config or {})
         mb_config.setdefault("width_mm", payload.width_mm)
         mb_config.setdefault("height_mm", payload.height_mm)
@@ -394,21 +497,21 @@ def create_quote(
             part_id=line.get("part_id"),
             sr_no=line["sr_no"],
             part_name=line["part_name"],
-            is_round=line["is_round"],
-            dim_1=line["dim_1"],
-            dim_2=line["dim_2"],
-            dim_3=line["dim_3"],
-            qty=line["qty"],
-            weight=line["weight"],
-            moc=line["moc"],
-            material_rate=line["material_rate"],
-            rm_cost=line["rm_cost"],
+            is_round=line.get("is_round", False),
+            dim_1=line.get("dim_1", 0.0),
+            dim_2=line.get("dim_2", 0.0),
+            dim_3=line.get("dim_3", 0.0),
+            qty=line.get("qty", 1),
+            weight=line.get("weight", 0.0),
+            moc=line.get("moc", "WCB"),
+            material_rate=line.get("material_rate", 0.0),
+            rm_cost=line.get("rm_cost", 0.0),
             plate_labour_rate=line.get("plate_labour_rate", 0.0),
             plate_labour_cost=line.get("plate_labour_cost", 0.0),
             per_piece_machining=line.get("per_piece_machining", 0.0),
             rolling_cost=line.get("rolling_cost", 0.0),
-            mfg_cost_total=line["mfg_cost_total"],
-            line_total=line["line_total"],
+            mfg_cost_total=line.get("mfg_cost_total", line.get("mfg_cost", 0.0)),
+            line_total=line.get("line_total", line.get("total_cost", 0.0)),
             is_scaled=line.get("is_scaled", False),
             is_manually_edited=line.get("is_manually_edited", False),
             edit_note=line.get("edit_note")
@@ -1007,4 +1110,40 @@ def download_quote_excel(id: int, db: Session = Depends(get_db)):
         content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={detail['quote_number']}.xlsx"}
+    )
+
+@router.post("/export-excel")
+def export_live_quote_excel(quote_data: Dict[str, Any]):
+    excel_bytes = generate_quote_excel(quote_data)
+    q_no = quote_data.get("quote_number") or "LIVE_COST_SHEET"
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={q_no}.xlsx"}
+    )
+
+@router.post("/export-pdf")
+def export_live_quote_pdf(quote_data: Dict[str, Any], db: Session = Depends(get_db)):
+    cs_obj = db.query(CompanySettings).first()
+    cs_dict = {
+        "company_name": cs_obj.company_name,
+        "tagline": cs_obj.tagline,
+        "address": cs_obj.address,
+        "phone": cs_obj.phone,
+        "email": cs_obj.email,
+        "website": cs_obj.website,
+        "gstin": cs_obj.gstin,
+        "cin": cs_obj.cin,
+        "pan": cs_obj.pan,
+        "payment_terms": cs_obj.payment_terms,
+        "validity_days": cs_obj.validity_days,
+        "delivery_terms": cs_obj.delivery_terms,
+        "warranty_terms": cs_obj.warranty_terms,
+    } if cs_obj else None
+    pdf_bytes = generate_quote_pdf(quote_data, company_settings=cs_dict)
+    q_no = quote_data.get("quote_number") or "LIVE_QUOTATION"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={q_no}.pdf"}
     )

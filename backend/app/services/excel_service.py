@@ -116,10 +116,14 @@ def generate_quote_excel(quote_data: Dict[str, Any]) -> bytes:
             if line.get("edit_note"):
                 part_name = f"{part_name} - {line['edit_note']}"
         ws.cell(row=r, column=2, value=part_name).alignment = Alignment(horizontal="left")
-        ws.cell(row=r, column=3, value=round(float(line.get("dim_1", 0)), 1)).alignment = Alignment(horizontal="right")
-        ws.cell(row=r, column=4, value=round(float(line.get("dim_2", 0)), 1)).alignment = Alignment(horizontal="right")
-        ws.cell(row=r, column=5, value=float(line.get("dim_3", 0)) if not is_round else 0).alignment = Alignment(horizontal="right")
-        ws.cell(row=r, column=6, value=int(line.get("qty", 1))).alignment = Alignment(horizontal="center")
+        d1 = line.get("dim_1") if line.get("dim_1") is not None else line.get("dim1", 0)
+        d2 = line.get("dim_2") if line.get("dim_2") is not None else line.get("dim2", 0)
+        d3 = line.get("dim_3") if line.get("dim_3") is not None else line.get("dim3", 0)
+        q = line.get("qty") if line.get("qty") is not None else line.get("quantity", 1)
+        ws.cell(row=r, column=3, value=round(float(d1 or 0), 1)).alignment = Alignment(horizontal="right")
+        ws.cell(row=r, column=4, value=round(float(d2 or 0), 1)).alignment = Alignment(horizontal="right")
+        ws.cell(row=r, column=5, value=float(d3 or 0) if not is_round else 0).alignment = Alignment(horizontal="right")
+        ws.cell(row=r, column=6, value=int(q or 1)).alignment = Alignment(horizontal="center")
         
         # LIVE FORMULA FOR WEIGHT (Column G)
         if is_round:

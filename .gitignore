@@ -10,3 +10,8 @@ coverage/
 *.sqlite
 *.sqlite3
 *.db
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+

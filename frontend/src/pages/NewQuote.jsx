@@ -20,6 +20,10 @@ import {
   Trash2
 } from 'lucide-react';
 import Damper3DViewer from '../components/Damper3DViewer';
+import FormulaInspector from '../components/FormulaInspector';
+import TwoDDesignAnalyzer from '../components/TwoDDesignAnalyzer';
+import initialCertifiedCostSheet from '../data/certified45Parts.json';
+import { DEFAULT_FORMULAS, evaluateFormula } from '../utils/formulaEvaluator';
 import { quotesApi, ratesApi } from '../services/api';
 import apiClient from '../services/api';
 import { formatINR, formatNumber, formatWeight } from '../utils/formatters';
@@ -87,7 +91,71 @@ const DAMPER_TYPES = [
   },
 ];
 
+// 4 Industrial Valve Types for Valve & Damper Manufacturing
+const VALVE_TYPES = [
+  {
+    id: 'butterfly_valve',
+    name: 'High-Performance / Triple Offset Butterfly Valve',
+    shortName: 'Butterfly Valve',
+    badge: 'API 609 / EN 593 • Fire-Safe API 607',
+    description: 'Triple-offset rotary disc valve for zero-leakage throttling and tight isolation in flue gas, water, and industrial pipelines.',
+    typeFactor: 1.0,
+    typicalApp: 'Flue Gas Desulfurization, Cooling Water, Power Plants, Chemical Lines',
+    stdActuator: 'Electric Quarter-Turn or Pneumatic Scotch Yoke',
+  },
+  {
+    id: 'knife_gate_valve',
+    name: 'Heavy-Duty Knife Gate Valve (Slurry & Ash)',
+    shortName: 'Knife Gate Valve',
+    badge: 'MSS SP-81 • Bi-directional / Uni-directional',
+    description: 'Stainless steel beveled knife blade shears through heavy slurries, ash, fly-ash, and pulp with compact bonnetless body.',
+    typeFactor: 1.15,
+    typicalApp: 'Ash Handling, Mining Slurry, Paper Pulp, Wastewater Lines',
+    stdActuator: 'Pneumatic Cylinder with Solenoid or Bevel Gear Handwheel',
+  },
+  {
+    id: 'ball_valve',
+    name: 'Industrial Trunnion / Floating Ball Valve',
+    shortName: 'Ball Valve',
+    badge: 'API 6D • Full Bore High-Pressure',
+    description: 'Heavy-duty 2-piece / 3-piece bolted spherical body with low pressure drop and bubble-tight shutoff.',
+    typeFactor: 1.25,
+    typicalApp: 'Petroleum, Natural Gas, High-Pressure Steam Lines',
+    stdActuator: 'Pneumatic Rack & Pinion or Electric Rotary Actuator',
+  },
+  {
+    id: 'globe_valve',
+    name: 'High-Pressure Cage Guided Globe Control Valve',
+    shortName: 'Globe Control Valve',
+    badge: 'ISA 75.01 • Linear Throttling',
+    description: 'Precision linear control valve with parabolic contoured plug and hardened cage, built for tight pressure regulation.',
+    typeFactor: 1.40,
+    typicalApp: 'Boiler Feedwater, Steam Pressure Reduction, Chemical Dosing',
+    stdActuator: 'Multi-Spring Diaphragm Actuator with Smart Positioner',
+  },
+];
+
+const STANDARD_VALVE_DNS = [
+  { dn: 50, inch: '2"' },
+  { dn: 80, inch: '3"' },
+  { dn: 100, inch: '4"' },
+  { dn: 150, inch: '6"' },
+  { dn: 200, inch: '8"' },
+  { dn: 250, inch: '10"' },
+  { dn: 300, inch: '12"' },
+  { dn: 350, inch: '14"' },
+  { dn: 400, inch: '16"' },
+  { dn: 500, inch: '20"' },
+  { dn: 600, inch: '24"' },
+  { dn: 800, inch: '32"' },
+  { dn: 1000, inch: '40"' },
+  { dn: 1200, inch: '48"' },
+];
+
 export default function NewQuote({ setView, setSelectedQuoteId, user }) {
+  // Product Category Switcher (Top Corner)
+  const [productCategory, setProductCategory] = useState('damper'); // 'damper' | 'valve'
+
   // RFQ Inputs
   const [customerName, setCustomerName] = useState('Tata Steel Limited');
   const [projectRef, setProjectRef] = useState('PVDQ-26046 / Blast Furnace Gas Isolation');
@@ -110,6 +178,20 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
   const [designPressure, setDesignPressure] = useState('±500 mmWg');
   const [flangeType, setFlangeType] = useState('Both Ends Flanged (IS 2062)');
   const [show3DViewer, setShow3DViewer] = useState(true);
+
+  // Valve Specific Configuration States
+  const [selectedValveTypeId, setSelectedValveTypeId] = useState('butterfly_valve');
+  const [valveSizeDn, setValveSizeDn] = useState(300);
+  const [valvePressureRating, setValvePressureRating] = useState('PN 16');
+  const [valveEndConnection, setValveEndConnection] = useState('Wafer');
+  const [valveBodyMoc, setValveBodyMoc] = useState('WCB (Cast Carbon Steel ASTM A216)');
+  const [valveTrimMoc, setValveTrimMoc] = useState('CF8M (Cast Stainless Steel SS316)');
+  const [valveSeatMoc, setValveSeatMoc] = useState('PTFE / RTFE');
+  const [valveActuator, setValveActuator] = useState('Electric Quarter-Turn Actuator');
+  const [withLimitSwitch, setWithLimitSwitch] = useState(true);
+  const [withSolenoidValve, setWithSolenoidValve] = useState(true);
+  const [withPositioner, setWithPositioner] = useState(false);
+  const [withAirFilterRegulator, setWithAirFilterRegulator] = useState(true);
 
   // Gate & Disc Blade Geometry States (for Rack & Pinion / Disc / Other damper types)
   const [gateThickness, setGateThickness] = useState(6.0); // mm
@@ -208,14 +290,22 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
   const [velocityMps, setVelocityMps] = useState(8.0);
   const [leakageClass, setLeakageClass] = useState('Class II');
 
-  // Database base parts & rates
-  const [rawParts, setRawParts] = useState([]);
-  const [calcResult, setCalcResult] = useState(null);
+  // Database base parts & rates (Pre-loaded with Certified 45-Part Schedule so table is never blank)
+  const [rawParts, setRawParts] = useState(initialCertifiedCostSheet?.lines || []);
+  const [calcResult, setCalcResult] = useState(initialCertifiedCostSheet || null);
   const [manualBomEdits, setManualBomEdits] = useState({});
   const [bomAdditions, setBomAdditions] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(null);
+
+  // Formula & Error / Tolerance Calibration States (Matching Reference Pages 5 & 6)
+  const [densityMultiplier, setDensityMultiplier] = useState(7.85e-6);
+  const [cuttingTolerancePct, setCuttingTolerancePct] = useState(0); // +/- % cutting & scrap error allowance
+  const [labourDivisor, setLabourDivisor] = useState(1000); // divider in labour formula: (L+W)*2*T*LC/1000
+  const [finishingRatePerKg, setFinishingRatePerKg] = useState(20.0);
+  const [fabricationRatePerKg, setFabricationRatePerKg] = useState(96.0);
+  const [lineErrorOverrides, setLineErrorOverrides] = useState({}); // sr_no -> +/- error in Rs
 
   // Editable rates state
   // Default values match PVDQ_26046_COST_SHEET.xlsx
@@ -257,6 +347,18 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
   const [lineRateOverrides, setLineRateOverrides] = useState({});
   const [lineMcOverrides, setLineMcOverrides] = useState({});
   const [lineLcRateOverrides, setLineLcRateOverrides] = useState({});
+  const [customFormulas, setCustomFormulas] = useState(DEFAULT_FORMULAS);
+
+  const handleUpdateFormula = (key, val) => {
+    setCustomFormulas(prev => ({
+      ...prev,
+      [key]: val,
+    }));
+  };
+
+  const handleResetFormulas = () => {
+    setCustomFormulas(DEFAULT_FORMULAS);
+  };
 
   // Fetch initial calculation
   useEffect(() => {
@@ -275,10 +377,12 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
         quantity: 1,
         markup_pct: 10.0,
       });
-      setCalcResult(res);
-      if (res.lines) setRawParts(res.lines);
+      if (res && res.lines && res.lines.length > 0) {
+        setCalcResult(res);
+        setRawParts(res.lines);
+      }
     } catch (err) {
-      console.error(err);
+      console.warn('Initial calculation offline fallback: using certified 45 parts schedule', err);
     } finally {
       setLoading(false);
     }
@@ -374,10 +478,16 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
     };
   };
 
-  // Perform Live Calculation whenever dimensions, quantity, markup, or rates change
+  // Perform Live Calculation whenever dimensions, quantity, markup, rates, or valve parameters change
   useEffect(() => {
-    if (width < sizeLimits.width_min_mm || width > sizeLimits.width_max_mm || height < sizeLimits.height_min_mm || height > sizeLimits.height_max_mm || depth < sizeLimits.depth_min_mm || depth > sizeLimits.depth_max_mm || quantity < 1) {
-      return;
+    if (productCategory === 'damper') {
+      if (width < sizeLimits.width_min_mm || width > sizeLimits.width_max_mm || height < sizeLimits.height_min_mm || height > sizeLimits.height_max_mm || depth < sizeLimits.depth_min_mm || depth > sizeLimits.depth_max_mm || quantity < 1) {
+        return;
+      }
+    } else {
+      if (!valveSizeDn || valveSizeDn < 50 || quantity < 1) {
+        return;
+      }
     }
 
     const timer = setTimeout(() => {
@@ -386,6 +496,8 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
 
     return () => clearTimeout(timer);
   }, [
+    productCategory, selectedValveTypeId, valveSizeDn, valvePressureRating, valveEndConnection,
+    valveBodyMoc, valveTrimMoc, valveSeatMoc, valveActuator, withLimitSwitch, withSolenoidValve, withPositioner, withAirFilterRegulator,
     width, height, depth, quantity, markupMultiplier, selectedDamperTypeId,
     activeRates, lineRateOverrides, lineMcOverrides, lineLcRateOverrides, manualBomEdits, bomAdditions, sizeLimits,
     frameThickness, frameConstruction, mbFlangeType, flangeWidth, flangeThick, sections,
@@ -419,10 +531,23 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
     return edits;
   };
 
-  const updateBomField = (lineIndex, field, value) => setManualBomEdits((current) => ({
-    ...current,
-    [lineIndex]: { ...current[lineIndex], [field]: value, edit_note: current[lineIndex]?.edit_note || 'Manual BOM edit' },
-  }));
+  const updateBomField = (lineIndex, field, value) => setManualBomEdits((current) => {
+    const nextLine = {
+      ...current[lineIndex],
+      [field]: value,
+      edit_note: current[lineIndex]?.edit_note || 'Manual BOM edit',
+    };
+    if (field !== 'line_total' && field !== 'is_delete' && field !== 'edit_note' && field !== 'moc') {
+      delete nextLine.line_total;
+    }
+    return { ...current, [lineIndex]: nextLine };
+  });
+
+  const readNumber = (raw, fallback = 0) => {
+    if (raw === '' || raw === null || raw === undefined) return fallback;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
 
   const addCustomBomLine = () => setBomAdditions((current) => [...current, {
     part_name: `Custom line ${current.length + 1}`, dim_1: 100, dim_2: 50, dim_3: 5,
@@ -433,14 +558,31 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
   const recalculateSheet = async () => {
     try {
       const markupPct = (markupMultiplier - 1.0) * 100.0;
-      const mbConfig = buildMultiBladeConfig();
+      const isValveMode = productCategory === 'valve';
+
+      const valveConfig = isValveMode ? {
+        valve_type: selectedValveTypeId,
+        size_dn: Number(valveSizeDn),
+        pressure_rating: valvePressureRating,
+        end_connection: valveEndConnection,
+        body_moc: valveBodyMoc,
+        trim_moc: valveTrimMoc,
+        seat_moc: valveSeatMoc,
+        actuation_type: valveActuator,
+        with_limit_switch: withLimitSwitch,
+        with_solenoid_valve: withSolenoidValve,
+        with_positioner: withPositioner,
+        with_air_filter_regulator: withAirFilterRegulator,
+      } : null;
 
       const payload = {
-        damper_type: isMultiBlade ? 'multi_blade' : 'rack_and_pinion',
-        multi_blade_config: mbConfig,
-        width_mm: Number(width),
-        height_mm: Number(height),
-        depth_mm: Number(depth),
+        product_category: isValveMode ? 'valve' : 'damper',
+        damper_type: isValveMode ? selectedValveTypeId : (isMultiBlade ? 'multi_blade' : 'rack_and_pinion'),
+        valve_config: valveConfig,
+        multi_blade_config: isValveMode ? null : buildMultiBladeConfig(),
+        width_mm: isValveMode ? Number(valveSizeDn) : Number(width),
+        height_mm: isValveMode ? Number(valveSizeDn) : Number(height),
+        depth_mm: isValveMode ? 200 : Number(depth),
         quantity: Number(quantity),
         markup_pct: Math.max(0, markupPct),
         rate_overrides: {
@@ -467,12 +609,181 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
     setLineRateOverrides({});
     setLineMcOverrides({});
     setLineLcRateOverrides({});
+    setLineErrorOverrides({});
+    setCuttingTolerancePct(0);
+    setDensityMultiplier(7.85e-6);
+    setLabourDivisor(1000);
+    setFabricationRatePerKg(96.0);
+    setFinishingRatePerKg(20.0);
+    setManualBomEdits({});
+    setBomAdditions([]);
     setWidth(3000);
     setHeight(3000);
     setDepth(450);
     setQuantity(1);
     setMarkupMultiplier(1.10);
     setSections(1);
+  };
+
+  // Apply suggested components from 2D Engineering Blueprint
+  const handleApply2DComponents = (selectedComps, blueprint) => {
+    const additions = (selectedComps || []).map(c => ({
+      part_name: c.name,
+      dim_1: c.dim1 || 100,
+      dim_2: c.dim2 || 50,
+      dim_3: c.dim3 || 6,
+      qty: c.qty || 1,
+      moc: c.moc || 'IS 2062',
+      material_rate: c.unitRate || activeRates.material_rates[c.moc] || 75,
+      plate_labour_rate: activeRates.labour_rates[c.moc] || 10,
+      per_piece_machining: c.isRound ? 150 : 0,
+      rolling_cost: 0,
+      is_round: !!c.isRound,
+      edit_note: `2D Blueprint: ${c.role || 'Suggested Part'}`,
+    }));
+    setBomAdditions(prev => [...prev, ...additions]);
+
+    if (blueprint?.dims) {
+      if (blueprint.dims.width) setWidth(Number(blueprint.dims.width));
+      if (blueprint.dims.height) setHeight(Number(blueprint.dims.height));
+      if (blueprint.dims.depth) setDepth(Number(blueprint.dims.depth));
+      if (blueprint.dims.sizeDn) {
+        setProductCategory('valve');
+        setValveSizeDn(Number(blueprint.dims.sizeDn));
+      }
+    }
+  };
+
+  const handleSelectDimensions = (dims, cat, type) => {
+    if (cat === 'valve') {
+      setProductCategory('valve');
+      if (type) setSelectedValveTypeId(type);
+      if (dims?.sizeDn) setValveSizeDn(Number(dims.sizeDn));
+    } else {
+      setProductCategory('damper');
+      if (type) setSelectedDamperTypeId(type);
+      if (dims?.width) setWidth(Number(dims.width));
+      if (dims?.height) setHeight(Number(dims.height));
+      if (dims?.depth) setDepth(Number(dims.depth));
+    }
+  };
+
+  // Download Live Excel Spreadsheet with Full 45-Part Schedule and Dynamic Formulas
+  const handleDownloadExcel = () => {
+    const liveLines = (displayLines || []).map((l, idx) => ({
+      sr_no: l.sr_no || (idx + 1),
+      part_name: l.part_name,
+      is_round: !!l.is_round,
+      dim_1: l.dim1 ?? l.dim_1 ?? 0,
+      dim_2: l.dim2 ?? l.dim_2 ?? 0,
+      dim_3: l.dim3 ?? l.dim_3 ?? 0,
+      qty: l.quantity ?? l.qty ?? 1,
+      weight: l.total_weight,
+      moc: l.moc,
+      material_rate: l.active_mat_rate ?? l.material_rate ?? 75,
+      rm_cost: l.active_rm_cost ?? l.rm_cost ?? 0,
+      plate_labour_rate: l.active_lc_rate ?? l.plate_labour_rate ?? 10,
+      plate_labour_cost: l.active_lc_cost ?? l.plate_labour_cost ?? 0,
+      per_piece_machining: l.active_mc ?? l.per_piece_machining ?? 0,
+      rolling_cost: l.rolling_cost || 0,
+      mfg_cost_total: l.active_total_mc ?? l.mfg_cost_total ?? 0,
+      line_total: l.active_line_total ?? l.line_total ?? 0,
+      is_manually_edited: l.is_manually_edited,
+      edit_note: l.edit_note,
+    }));
+
+    const liveData = {
+      id: calcResult?.id,
+      quote_number: quoteNumber || (calcResult?.quote_number || 'DRAFT-45PARTS'),
+      customer_name: customerName || 'Valued Customer',
+      damper_type: isValveMode ? selectedValveTypeId : (isMultiBlade ? 'multi_blade' : 'rack_and_pinion'),
+      width_mm: Number(width),
+      height_mm: Number(height),
+      depth_mm: Number(depth),
+      quantity: Number(quantity),
+      markup_pct: (markupMultiplier - 1.0) * 100.0,
+      total_weight_kg: totalWeight,
+      raw_material_cost: totalRmCost,
+      mfg_cost: totalMcCost,
+      lines: liveLines,
+      rates_snapshot: {
+        ...activeRates,
+        fabrication_rate_per_kg: fabricationRatePerKg,
+        finishing_rate_per_kg: finishingRatePerKg,
+      },
+      bought_out_breakdown: calcResult?.bought_out_breakdown || {},
+      automation_breakdown: calcResult?.automation_breakdown || {},
+      basic_cost: damperBasicCost,
+      automation_cost: damperAutomationCost,
+      fabrication_cost: fabricationCost,
+      total_cost: totalDamperCost,
+      quoted_price: unitQuotedPrice,
+    };
+
+    if (calcResult?.id) {
+      quotesApi.downloadExcel(calcResult.id);
+    } else {
+      quotesApi.downloadExcel(liveData);
+    }
+  };
+
+  // Download Live Quotation PDF
+  const handleDownloadPdf = () => {
+    const liveLines = (displayLines || []).map((l, idx) => ({
+      sr_no: l.sr_no || (idx + 1),
+      part_name: l.part_name,
+      is_round: !!l.is_round,
+      dim_1: l.dim1 ?? l.dim_1 ?? 0,
+      dim_2: l.dim2 ?? l.dim_2 ?? 0,
+      dim_3: l.dim3 ?? l.dim_3 ?? 0,
+      qty: l.quantity ?? l.qty ?? 1,
+      weight: l.total_weight,
+      moc: l.moc,
+      material_rate: l.active_mat_rate ?? l.material_rate ?? 75,
+      rm_cost: l.active_rm_cost ?? l.rm_cost ?? 0,
+      plate_labour_rate: l.active_lc_rate ?? l.plate_labour_rate ?? 10,
+      plate_labour_cost: l.active_lc_cost ?? l.plate_labour_cost ?? 0,
+      per_piece_machining: l.active_mc ?? l.per_piece_machining ?? 0,
+      rolling_cost: l.rolling_cost || 0,
+      mfg_cost_total: l.active_total_mc ?? l.mfg_cost_total ?? 0,
+      line_total: l.active_line_total ?? l.line_total ?? 0,
+      is_manually_edited: l.is_manually_edited,
+      edit_note: l.edit_note,
+    }));
+
+    const liveData = {
+      id: calcResult?.id,
+      quote_number: quoteNumber || (calcResult?.quote_number || 'DRAFT-45PARTS'),
+      customer_name: customerName || 'Valued Customer',
+      damper_type: isValveMode ? selectedValveTypeId : (isMultiBlade ? 'multi_blade' : 'rack_and_pinion'),
+      width_mm: Number(width),
+      height_mm: Number(height),
+      depth_mm: Number(depth),
+      quantity: Number(quantity),
+      markup_pct: (markupMultiplier - 1.0) * 100.0,
+      total_weight_kg: totalWeight,
+      raw_material_cost: totalRmCost,
+      mfg_cost: totalMcCost,
+      lines: liveLines,
+      rates_snapshot: {
+        ...activeRates,
+        fabrication_rate_per_kg: fabricationRatePerKg,
+        finishing_rate_per_kg: finishingRatePerKg,
+      },
+      bought_out_breakdown: calcResult?.bought_out_breakdown || {},
+      automation_breakdown: calcResult?.automation_breakdown || {},
+      basic_cost: damperBasicCost,
+      automation_cost: damperAutomationCost,
+      fabrication_cost: fabricationCost,
+      total_cost: totalDamperCost,
+      quoted_price: unitQuotedPrice,
+    };
+
+    if (calcResult?.id) {
+      quotesApi.downloadPdf(calcResult.id);
+    } else {
+      quotesApi.downloadPdf(liveData);
+    }
   };
 
   const handleSaveQuote = async () => {
@@ -489,15 +800,33 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
       const markupPct = (markupMultiplier - 1.0) * 100.0;
       const mbConfig = buildMultiBladeConfig();
 
+      const valveConfig = isValveMode ? {
+        valve_type: selectedValveTypeId,
+        size_dn: Number(valveSizeDn),
+        pressure_rating: valvePressureRating,
+        end_connection: valveEndConnection,
+        body_moc: valveBodyMoc,
+        trim_moc: valveTrimMoc,
+        seat_moc: valveSeatMoc,
+        actuation_type: valveActuator,
+        with_limit_switch: withLimitSwitch,
+        with_solenoid_valve: withSolenoidValve,
+        with_positioner: withPositioner,
+        with_air_filter_regulator: withAirFilterRegulator,
+      } : null;
+
       const payload = {
         customer_name: customerName,
         customer_company: customerName,
         project_name: projectRef,
-        damper_type: isMultiBlade ? 'multi_blade' : 'rack_and_pinion',
-        multi_blade_config: mbConfig,
-        width_mm: Number(width),
-        height_mm: Number(height),
-        depth_mm: Number(depth),
+        product_category: isValveMode ? 'valve' : 'damper',
+        damper_type: isValveMode ? selectedValveTypeId : (isMultiBlade ? 'multi_blade' : 'rack_and_pinion'),
+        valve_type: isValveMode ? selectedValveTypeId : null,
+        valve_config: valveConfig,
+        multi_blade_config: isValveMode ? null : mbConfig,
+        width_mm: isValveMode ? Number(valveSizeDn) : Number(width),
+        height_mm: isValveMode ? Number(valveSizeDn) : Number(height),
+        depth_mm: isValveMode ? 200 : Number(depth),
         quantity: Number(quantity),
         markup_pct: Math.max(0, markupPct),
         rate_overrides: {
@@ -558,59 +887,164 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
   // Check if non-reference dimensions
   const isBaseSize = width === 3000 && height === 3000 && depth === 450;
 
-  // Compute calculated line values using overrides
+  // Current Product Definitions
+  const isValveMode = productCategory === 'valve';
+  const currentValveType = VALVE_TYPES.find(v => v.id === selectedValveTypeId) || VALVE_TYPES[0];
+  const currentDamperType = DAMPER_TYPES.find(d => d.id === selectedDamperTypeId) || DAMPER_TYPES[0];
+  const typeMultiplier = currentDamperType.typeFactor || 1.0;
+
+  // Compute calculated line values using local edits and formula calibration so inline cells stay customizable
   const displayLines = useMemo(() => {
     if (!calcResult?.lines) return [];
-    return calcResult.lines.map((line) => {
-      const dim1 = line.dim_1 ?? line.dim1 ?? 0;
-      const dim2 = line.dim_2 ?? line.dim2 ?? 0;
-      const dim3 = line.dim_3 ?? line.dim3 ?? 0;
-      const qty = line.qty ?? line.quantity ?? 1;
-      const lineWeight = Number(line.weight ?? line.total_weight ?? 0);
+    const effectiveDensity = (Number(densityMultiplier) || 7.85e-6) * (1 + (Number(cuttingTolerancePct) / 100));
+    const effectiveDivisor = Number(labourDivisor) || 1000.0;
+
+    return calcResult.lines.map((line, index) => {
+      const lineIndex = line.source_line_index ?? index;
+      const edit = manualBomEdits[lineIndex] || {};
+      const dim1 = Number(edit.dim_1 ?? line.dim_1 ?? line.dim1 ?? 0);
+      const dim2 = Number(edit.dim_2 ?? line.dim_2 ?? line.dim2 ?? 0);
+      const dim3 = Number(edit.dim_3 ?? line.dim_3 ?? line.dim3 ?? 0);
+      const qty = Math.max(1, Number(edit.qty ?? line.qty ?? line.quantity ?? 1) || 1);
+      const moc = edit.moc ?? line.moc ?? '';
       const isRound = !!line.is_round;
+      const origQty = Number(line.qty ?? line.quantity ?? 1) || 1;
+      const origWeight = Number(line.weight ?? line.total_weight ?? 0);
+      const origRm = Number(line.rm_cost || 0);
+      const origMfg = Number(line.mfg_cost_total ?? line.mfg_cost ?? 0);
+      const origTotal = Number(line.line_total ?? line.total_cost ?? (origRm + origMfg));
 
-      const customMatRate = lineRateOverrides[line.sr_no] ?? line.material_rate ?? 72;
-      const customLcRate = lineLcRateOverrides[line.sr_no] ?? line.plate_labour_rate ?? (isRound ? 1 : 10);
-      const customMc = lineMcOverrides[line.sr_no] ?? line.per_piece_machining ?? 0;
-      const rollingCost = line.rolling_cost ?? 0;
+      const customMatRate = Number(
+        edit.material_rate ?? lineRateOverrides[line.sr_no] ?? line.material_rate ?? 0
+      );
+      const customLcRate = Number(
+        edit.plate_labour_rate ?? lineLcRateOverrides[line.sr_no] ?? line.plate_labour_rate ?? (isRound ? 0 : 10)
+      );
+      const customMc = Number(
+        edit.per_piece_machining ?? lineMcOverrides[line.sr_no] ?? line.per_piece_machining ?? 0
+      );
+      const errorAdj = Number(
+        edit.error_allowance ?? lineErrorOverrides[line.sr_no] ?? 0
+      );
+      const rollingCost = Number(line.rolling_cost ?? 0);
+      const hasPlate = dim1 > 0 && dim2 > 0 && (isRound || dim3 > 0);
+      const rateOverridden = edit.material_rate !== undefined || lineRateOverrides[line.sr_no] !== undefined;
+      const mcOverridden = edit.per_piece_machining !== undefined || lineMcOverrides[line.sr_no] !== undefined;
 
-      const rm_cost = lineWeight * customMatRate;
-      const lc_cost = isRound ? 0 : ((dim1 + dim2) * 2 * dim3 * customLcRate / 1000.0);
-      const mfg_cost_pc = lc_cost + rollingCost + customMc;
-      const total_mc = mfg_cost_pc * qty;
-      const line_total = rm_cost + total_mc;
+      const lineContext = {
+        L: dim1,
+        W: dim2,
+        T: dim3,
+        d: dim1,
+        length: dim2,
+        density: effectiveDensity,
+        qty,
+        rate: customMatRate,
+        material_rate: customMatRate,
+        labour_rate: customLcRate,
+        labour_divisor: effectiveDivisor,
+        mc: customMc,
+        rolling: rollingCost,
+        weight: 0,
+      };
+
+      let weight = origWeight;
+      if (hasPlate) {
+        weight = isRound
+          ? evaluateFormula(customFormulas.roundWeight || DEFAULT_FORMULAS.roundWeight, lineContext, 0.785 * dim1 * dim1 * dim2 * effectiveDensity * qty)
+          : evaluateFormula(customFormulas.plateWeight || DEFAULT_FORMULAS.plateWeight, lineContext, dim1 * dim2 * dim3 * effectiveDensity * qty);
+      } else if (origQty > 0 && qty !== origQty) {
+        weight = (origWeight / origQty) * qty * (1 + (Number(cuttingTolerancePct) / 100));
+      }
+
+      lineContext.weight = weight;
+      lineContext.total_weight = weight;
+
+      let rm_cost;
+      let lc_cost = 0;
+      let total_mc;
+      if (hasPlate) {
+        rm_cost = evaluateFormula(customFormulas.rawMaterial || DEFAULT_FORMULAS.rawMaterial, lineContext, weight * customMatRate);
+        lc_cost = isRound ? 0 : ((dim1 + dim2) * 2 * dim3 * customLcRate / effectiveDivisor);
+        lineContext.labour_cost = lc_cost;
+        total_mc = isRound
+          ? (customMc + rollingCost) * qty
+          : evaluateFormula(
+              customFormulas.machiningLabour || DEFAULT_FORMULAS.machiningLabour,
+              lineContext,
+              (lc_cost + rollingCost + customMc) * qty
+            );
+      } else {
+        rm_cost = rateOverridden 
+          ? evaluateFormula(customFormulas.rawMaterial || DEFAULT_FORMULAS.rawMaterial, lineContext, weight * customMatRate)
+          : origRm;
+        total_mc = mcOverridden ? customMc * qty : origMfg;
+      }
+
+      let line_total = (hasPlate ? (rm_cost + total_mc) : (origTotal - origRm - origMfg + rm_cost + total_mc)) + errorAdj;
+      if (edit.line_total !== undefined && edit.line_total !== null && edit.line_total !== '') {
+        line_total = Number(edit.line_total) || 0;
+      }
 
       return {
         ...line,
+        source_line_index: lineIndex,
         dim1,
         dim2,
         dim3,
         quantity: qty,
-        total_weight: lineWeight,
+        moc,
+        total_weight: weight,
         is_round: isRound,
         active_mat_rate: customMatRate,
         active_lc_rate: customLcRate,
-        active_mc: customMc,
+        active_mc: hasPlate ? customMc : (mcOverridden ? customMc : (line.mfg_cost ?? customMc)),
         active_rm_cost: rm_cost,
         active_lc_cost: lc_cost,
         active_total_mc: total_mc,
+        active_error_adj: errorAdj,
         active_line_total: line_total,
+        is_manually_edited: line.is_manually_edited || Object.keys(edit).length > 0 || errorAdj !== 0,
       };
     });
-  }, [calcResult, lineRateOverrides, lineLcRateOverrides, lineMcOverrides]);
+  }, [calcResult, manualBomEdits, lineRateOverrides, lineLcRateOverrides, lineMcOverrides, lineErrorOverrides, densityMultiplier, cuttingTolerancePct, labourDivisor, customFormulas]);
 
-  // Totals computed from display lines and engine results
-  const totalWeight = (isMultiBlade && calcResult?.total_weight_kg !== undefined) 
-    ? calcResult.total_weight_kg 
-    : displayLines.reduce((acc, l) => acc + (l.total_weight || 0), 0);
+  const isCustomFormulasActive = useMemo(() => {
+    return Object.keys(DEFAULT_FORMULAS).some(k => customFormulas[k] && customFormulas[k] !== DEFAULT_FORMULAS[k]);
+  }, [customFormulas]);
 
-  const totalRmCost = (isMultiBlade && calcResult?.raw_material_cost !== undefined)
-    ? calcResult.raw_material_cost
-    : displayLines.reduce((acc, l) => acc + (l.active_rm_cost || 0), 0);
+  // Totals computed from the visible (possibly customized) cost sheet
+  const hasSheetEdits = Object.keys(manualBomEdits).length > 0
+    || Object.keys(lineRateOverrides).length > 0
+    || Object.keys(lineMcOverrides).length > 0
+    || Object.keys(lineLcRateOverrides).length > 0
+    || Object.keys(lineErrorOverrides).length > 0
+    || bomAdditions.length > 0
+    || cuttingTolerancePct !== 0
+    || densityMultiplier !== 7.85e-6
+    || labourDivisor !== 1000
+    || isCustomFormulasActive;
 
-  const totalMcCost = (isMultiBlade && calcResult?.mfg_cost !== undefined)
-    ? calcResult.mfg_cost
-    : displayLines.reduce((acc, l) => acc + (l.active_total_mc || 0), 0);
+  const sheetWeight = displayLines.reduce((acc, l) => acc + (Number(l.total_weight) || 0), 0);
+  const sheetRmCost = displayLines.reduce((acc, l) => acc + (Number(l.active_rm_cost) || 0), 0);
+  const sheetMcCost = displayLines.reduce((acc, l) => acc + (Number(l.active_total_mc) || 0), 0);
+  const sheetLineTotal = displayLines.reduce((acc, l) => acc + (Number(l.active_line_total) || 0), 0);
+  const engineLineTotal = (calcResult?.lines || []).reduce((acc, line) => (
+    acc + Number(line.line_total ?? line.total_cost ?? ((line.rm_cost || 0) + (line.mfg_cost_total ?? line.mfg_cost ?? 0)))
+  ), 0);
+  const fabricatedDelta = hasSheetEdits ? (sheetLineTotal - engineLineTotal) : 0;
+
+  const totalWeight = hasSheetEdits || (!isValveMode && !isMultiBlade)
+    ? sheetWeight
+    : (calcResult?.total_weight_kg ?? sheetWeight);
+
+  const totalRmCost = hasSheetEdits || (!isValveMode && !isMultiBlade)
+    ? sheetRmCost
+    : (calcResult?.raw_material_cost ?? sheetRmCost);
+
+  const totalMcCost = hasSheetEdits || (!isValveMode && !isMultiBlade)
+    ? sheetMcCost
+    : (calcResult?.mfg_cost ?? sheetMcCost);
 
   // Bought out quantities & costs with standard scaling (Rack & Pinion)
   const nR = 2 * Math.ceil(width / 1500.0);
@@ -639,172 +1073,280 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
   const glandRate = activeRates.bought_out_prices?.gland_packing_unit ?? 200;
   const glandCost = glandQty * glandRate;
 
+  const boughtOutContext = {
+    racks: rackCost,
+    pinions: drivePinionCost + freePinionCost,
+    bearings: bearingCost,
+    hardware: hardwareCost,
+    gland_packing: glandCost,
+    finishing_rate: finishingRate,
+    total_weight: totalWeight,
+  };
+  const boughtOutCostCalculated = evaluateFormula(
+    customFormulas.boughtOut || DEFAULT_FORMULAS.boughtOut,
+    boughtOutContext,
+    rackCost + drivePinionCost + freePinionCost + bearingCost + hardwareCost + finishingCost + glandCost
+  );
+
   // Damper Basic Cost
-  const damperBasicCost = (isMultiBlade && calcResult?.basic_cost !== undefined)
+  const damperBasicCost = (isValveMode && calcResult?.basic_cost !== undefined && !hasSheetEdits)
     ? calcResult.basic_cost
-    : (totalRmCost + totalMcCost + rackCost + drivePinionCost + freePinionCost + bearingCost + hardwareCost + finishingCost + glandCost);
+    : ((isMultiBlade && calcResult?.basic_cost !== undefined && !hasSheetEdits)
+      ? calcResult.basic_cost
+      : (sheetLineTotal + boughtOutCostCalculated));
 
   // Automation costs
   const actuatorCost = activeRates.automation_prices?.actuator ?? 200000;
   const gearboxCost = activeRates.automation_prices?.gearbox ?? 100000;
   const miscCost = activeRates.automation_prices?.misc ?? 50000;
-  const damperAutomationCost = (isMultiBlade && calcResult?.automation_cost !== undefined)
+  const damperAutomationCost = (isValveMode && calcResult?.automation_cost !== undefined)
     ? calcResult.automation_cost
-    : (actuatorCost + gearboxCost + miscCost);
+    : ((isMultiBlade && calcResult?.automation_cost !== undefined)
+      ? calcResult.automation_cost
+      : (actuatorCost + gearboxCost + miscCost));
 
-  // Fabrication cost
+  // Fabrication & Testing cost
   const fabRate = activeRates.fabrication_rate_per_kg ?? 96;
-  const fabricationCost = (isMultiBlade && calcResult?.fabrication_cost !== undefined)
-    ? calcResult.fabrication_cost
-    : (totalWeight * fabRate);
+  const fabContext = {
+    total_weight: totalWeight,
+    fabrication_rate: fabRate,
+  };
+  const fabricationCostCalculated = evaluateFormula(
+    customFormulas.fabrication || DEFAULT_FORMULAS.fabrication,
+    fabContext,
+    totalWeight * fabRate
+  );
 
-  // Current damper type definition
-  const currentDamperType = DAMPER_TYPES.find(d => d.id === selectedDamperTypeId) || DAMPER_TYPES[0];
-  const typeMultiplier = currentDamperType.typeFactor || 1.0;
+  const fabricationCost = (isValveMode && calcResult?.testing_cost !== undefined && !hasSheetEdits)
+    ? (calcResult.testing_cost + (calcResult.finishing_cost || 0))
+    : ((isMultiBlade && calcResult?.fabrication_cost !== undefined && !hasSheetEdits)
+      ? calcResult.fabrication_cost
+      : fabricationCostCalculated);
 
   // Total Cost & Final Quoted Price
-  const totalDamperCost = (isMultiBlade && calcResult?.total_cost !== undefined)
-    ? calcResult.total_cost
-    : ((damperBasicCost + damperAutomationCost + fabricationCost) * typeMultiplier);
+  const totalCostContext = {
+    raw_material: totalRmCost,
+    machining: totalMcCost,
+    bought_out: boughtOutCostCalculated,
+    automation: damperAutomationCost,
+    fabrication: fabricationCost,
+    total_weight: totalWeight,
+  };
 
-  const unitQuotedPrice = (isMultiBlade && calcResult?.quoted_price !== undefined)
+  const totalDamperCostCalculated = evaluateFormula(
+    customFormulas.totalCost || DEFAULT_FORMULAS.totalCost,
+    totalCostContext,
+    (damperBasicCost + damperAutomationCost + fabricationCost) * typeMultiplier
+  );
+
+  const totalDamperCost = (isValveMode || isMultiBlade) && calcResult?.total_cost !== undefined && !hasSheetEdits
+    ? calcResult.total_cost + fabricatedDelta
+    : totalDamperCostCalculated;
+
+  const priceContext = {
+    total_cost: totalDamperCost,
+    markup_pct: (markupMultiplier - 1.0) * 100.0,
+  };
+
+  const unitQuotedPrice = (isValveMode || isMultiBlade) && calcResult?.quoted_price !== undefined && !hasSheetEdits
     ? calcResult.quoted_price
-    : (totalDamperCost * markupMultiplier);
+    : evaluateFormula(
+        customFormulas.quotedPrice || DEFAULT_FORMULAS.quotedPrice,
+        priceContext,
+        totalDamperCost * markupMultiplier
+      );
 
-  const batchQuotedPrice = (isMultiBlade && calcResult?.batch_totals?.quoted_price !== undefined)
+  const batchQuotedPrice = (isValveMode || isMultiBlade) && calcResult?.batch_totals?.quoted_price !== undefined && !hasSheetEdits
     ? calcResult.batch_totals.quoted_price
     : (unitQuotedPrice * quantity);
 
   return (
-    <div className="min-h-screen bg-[#f8fafd] text-[#212529] font-sans antialiased pb-16">
-      {/* 1. Cincom-Style Hero Banner Section */}
-      <section className="bg-gradient-to-b from-white via-[#eff8fe]/60 to-[#f8fafd] border-b border-slate-200/80 pt-8 pb-7 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-[#F9F7F2] text-[#242826] font-sans antialiased pb-16">
+      {/* 1. Designer Pastel Hero Banner Section */}
+      <section className="bg-gradient-to-b from-[#FFFDF9] via-[#F4EFE6]/70 to-[#F9F7F2] border-b border-[#E8E3D8] pt-8 pb-7 px-4 sm:px-6 lg:px-8">
         <div className="max-w-[1440px] mx-auto space-y-6">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
             <div className="max-w-3xl space-y-2">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-[#eff8fe] text-[#005daa] border border-blue-200">
-                <span className="w-2 h-2 rounded-full bg-[#f89030]"></span>
-                <span>Industrial Damper CPQ Suite • Multi-Type Damper Configurator</span>
-              </div>
-              <h1 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-[#212529] tracking-tight leading-tight">
-                Damper Quote Pro: From RFQ to Production BOM{' '}
-                <span className="relative inline-block text-[#005daa]">
-                  —Made Effortless
-                  <span className="absolute bottom-0 left-0 w-full h-[3px] bg-[#f89030] rounded-full"></span>
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-[#EEF5F1] text-[#2C483D] border border-[#D5E5DC]">
+                <span className="w-2 h-2 rounded-full bg-[#C46346]"></span>
+                <span>
+                  {productCategory === 'valve'
+                    ? 'Industrial Valve CPQ Suite • Multi-Standard Valve Configurator'
+                    : 'Industrial Damper CPQ Suite • Multi-Type Damper Configurator'}
                 </span>
+              </div>
+              <h1 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-[#242826] tracking-tight leading-tight">
+                {productCategory === 'valve' ? (
+                  <>
+                    Valve Quote Pro: Sizing to Production BOM{' '}
+                    <span className="relative inline-block text-[#C46346]">
+                      —Made Effortless
+                      <span className="absolute bottom-0 left-0 w-full h-[3px] bg-[#3D6353] rounded-full"></span>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    Damper Quote Pro: From RFQ to Production BOM{' '}
+                    <span className="relative inline-block text-[#3D6353]">
+                      —Made Effortless
+                      <span className="absolute bottom-0 left-0 w-full h-[3px] bg-[#C46346] rounded-full"></span>
+                    </span>
+                  </>
+                )}
               </h1>
-              <p className="text-xs sm:text-sm text-[#3b475d] leading-relaxed">
-                Configure industrial dampers with real-time 3D CAD modeling, multi-type selection, engineering customization, and automated cost estimation with live editable rates.
+              <p className="text-xs sm:text-sm text-[#5C6460] leading-relaxed">
+                {productCategory === 'valve'
+                  ? 'Configure industrial butterfly valves, knife gate valves, ball valves, and globe valves with real-time 3D CAD modeling, ASME/EN pressure ratings, materials, and live automated costing.'
+                  : 'Configure industrial dampers with real-time 3D CAD modeling, multi-type selection, engineering customization, and automated cost estimation with live editable rates.'}
               </p>
             </div>
 
-            {/* Quick Actions in Header */}
-            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-              <button
-                onClick={() => setShow3DViewer(!show3DViewer)}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold border transition-all shadow-sm ${
-                  show3DViewer 
-                    ? 'bg-[#005daa] text-white border-[#005daa]'
-                    : 'bg-white hover:bg-slate-50 text-[#3b475d] border-slate-300'
-                }`}
-              >
-                <Eye className="w-3.5 h-3.5" />
-                <span>{show3DViewer ? '3D CAD Active' : 'Design 3D CAD Model'}</span>
-              </button>
+            {/* Top Corner Product Category Switcher & Header Quick Actions */}
+            <div className="flex flex-col sm:flex-row items-end sm:items-center gap-3 shrink-0">
+              {/* Prominent Top Corner Switcher */}
+              <div className="flex items-center p-1.5 bg-[#252B28] rounded-2xl shadow-lg border border-[#3B433F]">
+                <button
+                  type="button"
+                  onClick={() => setProductCategory('damper')}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all ${
+                    productCategory === 'damper'
+                      ? 'bg-[#3D6353] text-white shadow-md ring-2 ring-[#3D6353]/40'
+                      : 'text-slate-300 hover:text-white hover:bg-[#343C38]'
+                  }`}
+                >
+                  <span className="text-base">🏭</span>
+                  <span>Industrial Dampers</span>
+                  {productCategory === 'damper' && (
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-1" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProductCategory('valve')}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all ${
+                    productCategory === 'valve'
+                      ? 'bg-[#C46346] text-white shadow-md ring-2 ring-[#C46346]/40'
+                      : 'text-slate-300 hover:text-white hover:bg-[#343C38]'
+                  }`}
+                >
+                  <span className="text-base">⚙️</span>
+                  <span>Industrial Valves</span>
+                  {productCategory === 'valve' && (
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-1" />
+                  )}
+                </button>
+              </div>
 
-              <button
-                onClick={handleResetRates}
-                title="Reset all rates to company standard baseline (₹ 20,23,815)"
-                className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold border border-slate-300 bg-white hover:bg-slate-50 text-[#3b475d] transition-all shadow-sm"
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-[#f89030]" />
-                <span>Reset Standard Rates</span>
-              </button>
+              {/* Quick Actions */}
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  onClick={() => setShow3DViewer(!show3DViewer)}
+                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold border transition-all shadow-sm ${
+                    show3DViewer 
+                      ? 'bg-[#3D6353] text-white border-[#3D6353]' 
+                      : 'bg-[#FFFDFB] hover:bg-[#F4EFE6] text-[#3E4541] border-[#DDD6C8]'
+                  }`}
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>{show3DViewer ? '3D Active' : 'Show 3D'}</span>
+                </button>
 
-              <button
-                onClick={() => quotesApi.downloadExcel(calcResult?.id || 1)}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm transition-all"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>Export Excel</span>
-              </button>
+                <button
+                  onClick={handleResetRates}
+                  title="Reset all rates to company standard baseline"
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold border border-[#DDD6C8] bg-[#FFFDFB] hover:bg-[#F4EFE6] text-[#3E4541] transition-all shadow-sm"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-[#C46346]" />
+                  <span>Reset</span>
+                </button>
 
-              <button
-                onClick={() => quotesApi.downloadPdf(calcResult?.id || 1)}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-[#005daa] hover:bg-[#004785] text-white shadow-sm transition-all"
-              >
-                <FileText className="w-3.5 h-3.5" />
-                <span>Export PDF</span>
-              </button>
+                <button
+                  onClick={handleDownloadExcel}
+                  title="Download Live Excel Spreadsheet with Editable Formulas"
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-[#2F5241] hover:bg-[#254234] text-white shadow-sm transition-all"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Download Live Excel</span>
+                </button>
 
-              <button
-                onClick={handleSaveQuote}
-                disabled={saving}
-                className="flex items-center gap-2 px-5 py-2 rounded-full bg-[#f89030] hover:bg-[#e07a1b] text-white text-xs font-bold shadow-md hover:shadow-lg transition-all group disabled:opacity-50"
-              >
-                <Save className="w-3.5 h-3.5" />
-                <span>{saving ? 'Saving...' : 'Save Quote'}</span>
-                <span className="w-4 h-4 rounded-full bg-white/20 flex items-center justify-center text-white group-hover:translate-x-0.5 transition-transform">
-                  →
-                </span>
-              </button>
+                <button
+                  onClick={handleDownloadPdf}
+                  title="Download Official Technical Quotation PDF"
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-semibold bg-[#3D6353] hover:bg-[#2F4D40] text-white shadow-sm transition-all"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>PDF Sheet</span>
+                </button>
+
+                <button
+                  onClick={handleSaveQuote}
+                  disabled={saving}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#C46346] hover:bg-[#B05337] text-white text-xs font-bold shadow-md hover:shadow-lg transition-all group disabled:opacity-50"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{saving ? 'Saving...' : 'Save Quote'}</span>
+                  <span className="w-4 h-4 rounded-full bg-white/20 flex items-center justify-center text-white group-hover:translate-x-0.5 transition-transform">
+                    →
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
 
-          {/* 4 Metric Badges matching Cincom's Counter Cards */}
+          {/* 4 Pastel Metric Counter Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5 pt-2">
-            <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-sm hover:shadow transition-shadow flex items-center justify-between">
+            <div className="bg-[#FFFDFB] border border-[#E8E3D8] rounded-xl p-3.5 shadow-sm hover:shadow transition-shadow flex items-center justify-between">
               <div>
-                <div className="text-[11px] font-semibold text-[#64748b] uppercase tracking-wider">
+                <div className="text-[11px] font-semibold text-[#6E7772] uppercase tracking-wider">
                   Costing Accuracy
                 </div>
-                <div className="text-2xl font-black text-[#005daa] font-mono mt-0.5">
+                <div className="text-2xl font-black text-[#3D6353] font-mono mt-0.5">
                   100%
                 </div>
               </div>
-              <div className="w-10 h-10 rounded-full bg-[#eff8fe] flex items-center justify-center text-[#005daa]">
+              <div className="w-10 h-10 rounded-full bg-[#EEF5F1] flex items-center justify-center text-[#3D6353]">
                 <CheckCircle2 className="w-5 h-5" />
               </div>
             </div>
 
-            <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-sm hover:shadow transition-shadow flex items-center justify-between">
+            <div className="bg-[#FFFDFB] border border-[#E8E3D8] rounded-xl p-3.5 shadow-sm hover:shadow transition-shadow flex items-center justify-between">
               <div>
-                <div className="text-[11px] font-semibold text-[#64748b] uppercase tracking-wider">
+                <div className="text-[11px] font-semibold text-[#6E7772] uppercase tracking-wider">
                   Configured BOM
                 </div>
-                <div className="text-2xl font-black text-[#005daa] font-mono mt-0.5">
-                  45 <span className="text-xs font-normal text-slate-500">Parts</span>
+                <div className="text-2xl font-black text-[#3D6353] font-mono mt-0.5">
+                  45 <span className="text-xs font-normal text-[#6E7772]">Parts</span>
                 </div>
               </div>
-              <div className="w-10 h-10 rounded-full bg-[#eff8fe] flex items-center justify-center text-[#005daa]">
+              <div className="w-10 h-10 rounded-full bg-[#EEF5F1] flex items-center justify-center text-[#3D6353]">
                 <Layers className="w-5 h-5" />
               </div>
             </div>
 
-            <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-sm hover:shadow transition-shadow flex items-center justify-between">
+            <div className="bg-[#FFFDFB] border border-[#E8E3D8] rounded-xl p-3.5 shadow-sm hover:shadow transition-shadow flex items-center justify-between">
               <div>
-                <div className="text-[11px] font-semibold text-[#64748b] uppercase tracking-wider">
+                <div className="text-[11px] font-semibold text-[#6E7772] uppercase tracking-wider">
                   Quote Turnaround
                 </div>
-                <div className="text-2xl font-black text-[#f89030] font-mono mt-0.5">
-                  &lt; 2 <span className="text-xs font-normal text-slate-500">Min</span>
+                <div className="text-2xl font-black text-[#C46346] font-mono mt-0.5">
+                  &lt; 2 <span className="text-xs font-normal text-[#6E7772]">Min</span>
                 </div>
               </div>
-              <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center text-[#f89030]">
+              <div className="w-10 h-10 rounded-full bg-[#FDF1EB] flex items-center justify-center text-[#C46346]">
                 <Clock className="w-5 h-5" />
               </div>
             </div>
 
-            <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-sm hover:shadow transition-shadow flex items-center justify-between">
+            <div className="bg-[#FFFDFB] border border-[#E8E3D8] rounded-xl p-3.5 shadow-sm hover:shadow transition-shadow flex items-center justify-between">
               <div>
-                <div className="text-[11px] font-semibold text-[#64748b] uppercase tracking-wider">
+                <div className="text-[11px] font-semibold text-[#6E7772] uppercase tracking-wider">
                   Unit Baseline Price
                 </div>
-                <div className="text-2xl font-black text-emerald-800 font-mono mt-0.5">
+                <div className="text-2xl font-black text-[#2F5241] font-mono mt-0.5">
                   ₹ 20.24 L
                 </div>
               </div>
-              <div className="w-10 h-10 rounded-full bg-emerald-50 flex items-center justify-center text-emerald-700">
+              <div className="w-10 h-10 rounded-full bg-[#EEF5F1] flex items-center justify-center text-[#2F5241]">
                 <CheckCircle2 className="w-5 h-5" />
               </div>
             </div>
@@ -814,8 +1356,369 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
 
       {/* Main Content Workspace */}
       <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* 2. Sizing Parameters Card */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+        {isValveMode ? (
+          <>
+            {/* 1. Valve Nominal Bore & Pressure Rating Card */}
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#f89030]"></span>
+                  <h2 className="font-bold text-sm sm:text-base text-[#212529] uppercase tracking-wide">
+                    1. Valve Nominal Bore (DN) & Pressure Rating
+                  </h2>
+                  <span className="text-xs text-[#005daa] font-mono font-semibold">
+                    • Configured: DN {valveSizeDn} ({STANDARD_VALVE_DNS.find(v => v.dn === Number(valveSizeDn))?.inch || `${Math.round(valveSizeDn/25.4)}"`}) • {valvePressureRating} • {valveEndConnection}
+                  </span>
+                  <span className="text-xs font-bold text-emerald-700">
+                    Industrial Standard Size
+                  </span>
+                </div>
+
+                {/* Quick DN Presets */}
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="text-[#64748b] font-medium mr-1">Standard DN:</span>
+                  {[50, 80, 100, 150, 200, 300, 400, 500, 600, 800, 1000, 1200].map((dnVal) => {
+                    const dnObj = STANDARD_VALVE_DNS.find(v => v.dn === dnVal);
+                    const isSelected = Number(valveSizeDn) === dnVal;
+                    return (
+                      <button
+                        key={dnVal}
+                        type="button"
+                        onClick={() => setValveSizeDn(dnVal)}
+                        className={`px-2.5 py-1 rounded-full font-medium transition-colors ${
+                          isSelected
+                            ? 'bg-[#f89030] text-white font-semibold shadow-sm'
+                            : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                        }`}
+                      >
+                        DN{dnVal} ({dnObj?.inch || `${Math.round(dnVal/25.4)}"`})
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Sliders and Controls */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 pt-2">
+                {/* Nominal Bore Slider */}
+                <div>
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-[#64748b] text-xs font-semibold">Nominal Bore (DN mm)</span>
+                    <span className="text-[#f89030] text-xs font-bold font-mono">
+                      DN {valveSizeDn} ({STANDARD_VALVE_DNS.find(v => v.dn === Number(valveSizeDn))?.inch || `${Math.round(valveSizeDn/25.4)}"`})
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="50"
+                    max="2000"
+                    step="10"
+                    value={valveSizeDn}
+                    className="cfg-slider"
+                    style={{ '--pct': `${((valveSizeDn - 50) / (2000 - 50)) * 100}%` }}
+                    onChange={(e) => setValveSizeDn(Number(e.target.value))}
+                  />
+                  <div className="flex justify-between text-[10px] text-slate-400 mt-1 font-mono">
+                    <span>DN 50 (2")</span>
+                    <span>DN 2000 (80")</span>
+                  </div>
+                  <input
+                    aria-label="Typed DN"
+                    className="mt-2 w-full rounded-lg border border-slate-300 px-2 py-1.5 font-mono text-sm"
+                    type="number"
+                    min="50"
+                    max="2000"
+                    value={valveSizeDn}
+                    onChange={(e) => setValveSizeDn(Number(e.target.value))}
+                  />
+                </div>
+
+                {/* Pressure Rating Buttons */}
+                <div>
+                  <label className="block text-[#64748b] text-xs font-semibold mb-2">Pressure Class / Rating</label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {['PN 10', 'PN 16', 'PN 25', 'PN 40', 'Class 150', 'Class 300', 'Class 600'].map((rating) => (
+                      <button
+                        key={rating}
+                        type="button"
+                        onClick={() => setValvePressureRating(rating)}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                          valvePressureRating === rating
+                            ? 'bg-[#005daa] text-white border-[#005daa] shadow-sm'
+                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        {rating}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* End Connection Selector */}
+                <div>
+                  <label className="block text-[#64748b] text-xs font-semibold mb-2">End Connection Style</label>
+                  <div className="space-y-1.5">
+                    {[
+                      { id: 'Wafer', label: 'Wafer Type (Between Flanges)' },
+                      { id: 'Lugged', label: 'Lugged Type (Drilled & Tapped)' },
+                      { id: 'Double Flanged', label: 'Double Flanged RF (ASME B16.5)' },
+                      { id: 'Butt-Weld', label: 'Butt-Weld (B16.25)' },
+                    ].map((conn) => (
+                      <button
+                        key={conn.id}
+                        type="button"
+                        onClick={() => setValveEndConnection(conn.id)}
+                        className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+                          valveEndConnection === conn.id
+                            ? 'bg-[#eff8fe] text-[#005daa] border-[#005daa] shadow-sm ring-1 ring-[#005daa]/20'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        {conn.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Order Quantity & Reference */}
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-[#64748b] text-xs font-semibold mb-1">Order Quantity (Units)</label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                        className="w-9 h-9 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 font-bold text-slate-700 flex items-center justify-center"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="number"
+                        min="1"
+                        value={quantity}
+                        onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                        className="w-full text-center py-1.5 rounded-lg border border-slate-300 font-mono font-bold text-slate-900"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setQuantity(quantity + 1)}
+                        className="w-9 h-9 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 font-bold text-slate-700 flex items-center justify-center"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[#64748b] text-xs font-semibold mb-1">Target Commercial Margin</label>
+                    <div className="flex items-center gap-2">
+                      {[1.05, 1.10, 1.15, 1.20].map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setMarkupMultiplier(m)}
+                          className={`flex-1 py-1 rounded-lg text-xs font-bold border transition-all ${
+                            markupMultiplier === m
+                              ? 'bg-[#f89030] text-white border-[#f89030]'
+                              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          {((m - 1) * 100).toFixed(0)}%
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 2. Select Valve Model Card */}
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#005daa]"></span>
+                  <h2 className="font-bold text-sm sm:text-base text-[#212529] uppercase tracking-wide">
+                    2. Select Industrial Valve Model & Product Family
+                  </h2>
+                </div>
+                <span className="text-xs text-[#005daa] font-semibold bg-[#eff8fe] px-3 py-1 rounded-full border border-blue-200">
+                  Active: {currentValveType.name}
+                </span>
+              </div>
+
+              {/* Valve Types Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                {VALVE_TYPES.map((type) => {
+                  const isSelected = selectedValveTypeId === type.id;
+                  return (
+                    <div
+                      key={type.id}
+                      onClick={() => setSelectedValveTypeId(type.id)}
+                      className={`p-4 rounded-xl border cursor-pointer transition-all flex flex-col justify-between text-left ${
+                        isSelected
+                          ? 'bg-[#eff8fe] border-[#005daa] ring-2 ring-[#005daa]/20 shadow-md'
+                          : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
+                      }`}
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-sm text-[#212529]">
+                            {type.shortName}
+                          </span>
+                          {isSelected ? (
+                            <span className="w-3 h-3 rounded-full bg-[#005daa] ring-2 ring-blue-200"></span>
+                          ) : (
+                            <span className="w-3 h-3 rounded-full border border-slate-300"></span>
+                          )}
+                        </div>
+                        <div className="text-[10px] font-bold text-[#f89030]">
+                          {type.badge}
+                        </div>
+                        <p className="text-xs text-[#64748b] leading-relaxed">
+                          {type.description}
+                        </p>
+                      </div>
+                      <div className="mt-3 pt-2.5 border-t border-slate-200/60 flex flex-col gap-1 text-[10px] text-slate-500 font-mono">
+                        <div className="flex justify-between">
+                          <span>App: {type.typicalApp.split(',')[0]}</span>
+                          <span className="text-[#005daa] font-bold">{type.stdActuator.split(' ')[0]}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 3. Valve Materials, Trim & Actuation Card */}
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#f89030]"></span>
+                  <h2 className="font-bold text-sm sm:text-base text-[#212529] uppercase tracking-wide">
+                    3. Metallurgy, Trim, Seats & Actuation Package
+                  </h2>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="px-2.5 py-1 bg-emerald-50 text-emerald-800 font-mono font-bold rounded-lg border border-emerald-200">
+                    Est. Wt: {calcResult?.total_weight_kg || '180'} kg
+                  </span>
+                  <span className="px-2.5 py-1 bg-blue-50 text-[#005daa] font-mono font-bold rounded-lg border border-blue-200">
+                    Torque: {calcResult?.operating_torque_nm || '320'} Nm
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+                {/* Body MOC */}
+                <div>
+                  <label className="block text-[#64748b] font-semibold mb-1">Body Material (Shell MOC)</label>
+                  <select
+                    value={valveBodyMoc}
+                    onChange={(e) => setValveBodyMoc(e.target.value)}
+                    className="w-full px-2.5 py-2 rounded-xl border border-slate-300 bg-white font-medium text-slate-800 focus:border-[#005daa] focus:outline-none"
+                  >
+                    <option value="WCB (Cast Carbon Steel ASTM A216)">WCB (Cast Carbon Steel ASTM A216)</option>
+                    <option value="CF8M (Cast Stainless Steel SS316)">CF8M (Cast Stainless Steel SS316)</option>
+                    <option value="CF8 (Cast Stainless Steel SS304)">CF8 (Cast Stainless Steel SS304)</option>
+                    <option value="Ductile Iron (GGG40 / EN-GJS-400)">Ductile Iron (GGG40 / EN-GJS-400)</option>
+                    <option value="Super Duplex Stainless Steel (2507)">Super Duplex Stainless Steel (2507)</option>
+                  </select>
+                </div>
+
+                {/* Trim / Disc MOC */}
+                <div>
+                  <label className="block text-[#64748b] font-semibold mb-1">Trim / Disc / Blade MOC</label>
+                  <select
+                    value={valveTrimMoc}
+                    onChange={(e) => setValveTrimMoc(e.target.value)}
+                    className="w-full px-2.5 py-2 rounded-xl border border-slate-300 bg-white font-medium text-slate-800 focus:border-[#005daa] focus:outline-none"
+                  >
+                    <option value="CF8M (Cast Stainless Steel SS316)">CF8M / SS316 Stainless Steel</option>
+                    <option value="CF8 (Cast Stainless Steel SS304)">CF8 / SS304 Stainless Steel</option>
+                    <option value="Duplex Stainless Steel (2205)">Duplex Stainless Steel (2205)</option>
+                    <option value="Stellite Hard-Faced SS316">Stellite Hard-Faced SS316</option>
+                    <option value="Hard Chrome Plated Carbon Steel">Hard Chrome Plated Carbon Steel</option>
+                  </select>
+                </div>
+
+                {/* Seat MOC */}
+                <div>
+                  <label className="block text-[#64748b] font-semibold mb-1">Seat & Sealing Ring MOC</label>
+                  <select
+                    value={valveSeatMoc}
+                    onChange={(e) => setValveSeatMoc(e.target.value)}
+                    className="w-full px-2.5 py-2 rounded-xl border border-slate-300 bg-white font-medium text-slate-800 focus:border-[#005daa] focus:outline-none"
+                  >
+                    <option value="PTFE / RTFE">PTFE / R-PTFE (Soft Resilient Seat)</option>
+                    <option value="Metal-to-Metal (Hard Faced)">Metal-to-Metal (Stellite / Hardened)</option>
+                    <option value="EPDM Resilient Liner">EPDM Resilient Liner</option>
+                    <option value="Viton / FKM High-Temp">Viton / FKM High-Temp</option>
+                  </select>
+                </div>
+
+                {/* Actuator Type */}
+                <div>
+                  <label className="block text-[#64748b] font-semibold mb-1">Actuation System</label>
+                  <select
+                    value={valveActuator}
+                    onChange={(e) => setValveActuator(e.target.value)}
+                    className="w-full px-2.5 py-2 rounded-xl border border-slate-300 bg-white font-medium text-slate-800 focus:border-[#005daa] focus:outline-none"
+                  >
+                    <option value="Manual Handwheel / Worm Gearbox">Manual Handwheel / Worm Gearbox</option>
+                    <option value="Pneumatic Double Acting + Limit Switch">Pneumatic Double Acting + Limit Switch</option>
+                    <option value="Pneumatic Spring Return (Fail Safe)">Pneumatic Spring Return (Fail Safe)</option>
+                    <option value="Electric Intelligent (Rotork / Auma / Bernard 415V)">Electric Intelligent (Rotork / Auma 415V)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Automation Accessories Checkboxes */}
+              <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-4 text-xs">
+                <span className="font-semibold text-slate-700">Automation Package:</span>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={withLimitSwitch}
+                    onChange={(e) => setWithLimitSwitch(e.target.checked)}
+                    className="w-4 h-4 rounded text-[#005daa] focus:ring-0"
+                  />
+                  <span className="text-slate-600 font-medium">Limit Switch Box (Open/Close Dome)</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={withSolenoidValve}
+                    onChange={(e) => setWithSolenoidValve(e.target.checked)}
+                    className="w-4 h-4 rounded text-[#005daa] focus:ring-0"
+                  />
+                  <span className="text-slate-600 font-medium">Solenoid Valve (NAMUR 24VDC/230VAC)</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={withPositioner}
+                    onChange={(e) => setWithPositioner(e.target.checked)}
+                    className="w-4 h-4 rounded text-[#005daa] focus:ring-0"
+                  />
+                  <span className="text-slate-600 font-medium">Smart Positioner (4-20mA HART)</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={withAirFilterRegulator}
+                    onChange={(e) => setWithAirFilterRegulator(e.target.checked)}
+                    className="w-4 h-4 rounded text-[#005daa] focus:ring-0"
+                  />
+                  <span className="text-slate-600 font-medium">Air Filter Regulator with Gauge</span>
+                </label>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* 2. Sizing Parameters Card */}
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-100 pb-3">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-[#005daa]"></span>
@@ -902,10 +1805,10 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                   cursor: pointer;
                   background: linear-gradient(
                     to right,
-                    #f89030 0%,
-                    #f89030 var(--pct, 50%),
-                    #e2e8f0 var(--pct, 50%),
-                    #e2e8f0 100%
+                    #C46346 0%,
+                    #C46346 var(--pct, 50%),
+                    #E8E3D8 var(--pct, 50%),
+                    #E8E3D8 100%
                   );
                 }
                 .cfg-slider::-webkit-slider-thumb {
@@ -914,29 +1817,29 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                   width: 18px;
                   height: 18px;
                   border-radius: 50%;
-                  background: #f89030;
+                  background: #C46346;
                   border: 2.5px solid #fff;
-                  box-shadow: 0 2px 8px rgba(248,144,48,0.45), 0 0 0 1px #f89030;
+                  box-shadow: 0 2px 8px rgba(196,99,70,0.35), 0 0 0 1px #C46346;
                   transition: transform 0.15s;
                 }
                 .cfg-slider::-webkit-slider-thumb:hover { transform: scale(1.18); }
                 .cfg-slider::-moz-range-thumb {
                   width: 18px; height: 18px;
                   border-radius: 50%;
-                  background: #f89030;
+                  background: #C46346;
                   border: 2.5px solid #fff;
-                  box-shadow: 0 2px 8px rgba(248,144,48,0.45);
+                  box-shadow: 0 2px 8px rgba(196,99,70,0.35);
                 }
               `}</style>
 
-              <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm">
-                <div className="flex flex-wrap items-center gap-2 mb-4 border-b border-slate-100 pb-3">
-                  <span className="w-2.5 h-2.5 rounded-full bg-[#f89030]"></span>
-                  <span className="font-bold text-sm text-[#212529] uppercase tracking-wide">Configuration</span>
-                  <div className="ml-auto inline-flex rounded border border-slate-300 p-0.5" aria-label="Dimension input units">
-                    {['mm', 'm'].map((unit) => <button key={unit} type="button" aria-pressed={dimensionUnit === unit} onClick={() => setDimensionUnit(unit)} className={`min-w-10 px-2 py-1 text-xs font-bold ${dimensionUnit === unit ? 'bg-[#005daa] text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{unit}</button>)}
+              <div className="bg-[#FFFDFB] border border-[#E8E3D8] rounded-2xl p-5 shadow-sm">
+                <div className="flex flex-wrap items-center gap-2 mb-4 border-b border-[#EAE5DB] pb-3">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#C46346]"></span>
+                  <span className="font-bold text-sm text-[#242826] uppercase tracking-wide">Configuration</span>
+                  <div className="ml-auto inline-flex rounded border border-[#DDD6C8] p-0.5" aria-label="Dimension input units">
+                    {['mm', 'm'].map((unit) => <button key={unit} type="button" aria-pressed={dimensionUnit === unit} onClick={() => setDimensionUnit(unit)} className={`min-w-10 px-2 py-1 text-xs font-bold ${dimensionUnit === unit ? 'bg-[#3D6353] text-white' : 'text-[#5C6460] hover:bg-[#F4EFE6]'}`}>{unit}</button>)}
                   </div>
-                  <span className="ml-auto text-xs font-mono text-[#005daa] font-semibold bg-[#eff8fe] px-2.5 py-0.5 rounded-full border border-blue-100">
+                  <span className="ml-auto text-xs font-mono text-[#2F4D40] font-semibold bg-[#EEF5F1] px-2.5 py-0.5 rounded-full border border-[#D5E5DC]">
                     {width} × {height} × {depth} mm
                   </span>
                 </div>
@@ -1068,15 +1971,15 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
         </div>
 
         {/* 3. Damper Types Selector & Engineering Customization */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+        <div className="bg-[#FFFDFB] border border-[#E8E3D8] rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#EAE5DB] pb-3">
             <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-[#f89030]"></span>
-              <h2 className="font-bold text-sm sm:text-base text-[#212529] uppercase tracking-wide">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#C46346]"></span>
+              <h2 className="font-bold text-sm sm:text-base text-[#242826] uppercase tracking-wide">
                 2. Select Damper Model & Engineering Customization
               </h2>
             </div>
-            <span className="text-xs text-[#005daa] font-semibold bg-[#eff8fe] px-3 py-1 rounded-full border border-blue-200">
+            <span className="text-xs text-[#2F4D40] font-semibold bg-[#EEF5F1] px-3 py-1 rounded-full border border-[#D5E5DC]">
               Active: {currentDamperType.name}
             </span>
           </div>
@@ -1091,32 +1994,32 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                   onClick={() => setSelectedDamperTypeId(type.id)}
                   className={`p-3.5 rounded-xl border cursor-pointer transition-all flex flex-col justify-between text-left ${
                     isSelected
-                      ? 'bg-[#eff8fe] border-[#005daa] ring-2 ring-[#005daa]/20 shadow-sm'
-                      : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
+                      ? 'bg-[#EEF5F1] border-[#3D6353] ring-2 ring-[#3D6353]/20 shadow-sm'
+                      : 'bg-white border-[#E8E3D8] hover:border-[#DDD6C8] hover:bg-[#FAF7F2]'
                   }`}
                 >
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-xs text-[#212529] line-clamp-1">
+                      <span className="font-bold text-xs text-[#242826] line-clamp-1">
                         {type.shortName}
                       </span>
                       {isSelected ? (
-                        <span className="w-2.5 h-2.5 rounded-full bg-[#005daa]"></span>
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#3D6353]"></span>
                       ) : (
-                        <span className="w-2.5 h-2.5 rounded-full border border-slate-300"></span>
+                        <span className="w-2.5 h-2.5 rounded-full border border-[#DDD6C8]"></span>
                       )}
                     </div>
-                    <div className="text-[10px] font-semibold text-[#f89030]">
+                    <div className="text-[10px] font-semibold text-[#C46346]">
                       {type.badge}
                     </div>
-                    <p className="text-[11px] text-[#64748b] leading-snug line-clamp-2">
+                    <p className="text-[11px] text-[#5C6460] leading-snug line-clamp-2">
                       {type.description}
                     </p>
                   </div>
-                  <div className="mt-2.5 pt-2 border-t border-slate-200/60 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                  <div className="mt-2.5 pt-2 border-t border-[#EAE5DB] flex items-center justify-between text-[10px] text-[#5C6460] font-mono">
                     <span>Factor: {type.typeFactor.toFixed(2)}×</span>
                     {type.id === 'rack-pinion' && (
-                      <span className="text-[#005daa] font-bold">45-Part BOM</span>
+                      <span className="text-[#2F4D40] font-bold">45-Part BOM</span>
                     )}
                   </div>
                 </div>
@@ -2646,6 +3549,8 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
           </>
           )}
         </div>
+          </>
+        )}
 
         {/* 4. Parametric 3D CAD Model Designer */}
         <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
@@ -2654,20 +3559,22 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
               <span className="w-2.5 h-2.5 rounded-full bg-[#005daa]"></span>
               <div>
                 <h2 className="font-bold text-sm sm:text-base text-[#212529] uppercase tracking-wide">
-                  3. Parametric 3D CAD Model Designer
+                  {isValveMode ? '4. Parametric 3D CAD Valve Model Designer' : '4. Parametric 3D CAD Damper Model Designer'}
                 </h2>
                 <p className="text-xs text-[#64748b]">
-                  Model generated to specified dimensions: <span className="font-mono font-bold text-[#005daa]">{width} × {height} × {depth} mm</span> • {currentDamperType.name}
+                  {isValveMode
+                    ? `Model generated for: DN${valveSizeDn} (${STANDARD_VALVE_DNS.find(v => v.dn === Number(valveSizeDn))?.inch || '12"'}) • ${valvePressureRating} • ${currentValveType.name}`
+                    : `Model generated to specified dimensions: ${width} × ${height} × ${depth} mm • ${currentDamperType.name}`}
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-mono font-semibold px-2.5 py-1 bg-[#eff8fe] text-[#005daa] rounded-lg border border-blue-200">
-                Drive: {(isMultiBlade ? mbActuatorType : actuatorType).toUpperCase()}
+                {isValveMode ? `Drive: ${valveActuator.split(' ')[0].toUpperCase()}` : `Drive: ${(isMultiBlade ? mbActuatorType : actuatorType).toUpperCase()}`}
               </span>
               <span className="text-[11px] font-mono font-semibold px-2.5 py-1 bg-amber-50 text-[#f89030] rounded-lg border border-amber-200">
-                Seal: {sealingEfficiency}
+                {isValveMode ? `Rating: ${valvePressureRating}` : `Seal: ${sealingEfficiency}`}
               </span>
               <button
                 onClick={() => setShow3DViewer(!show3DViewer)}
@@ -2681,6 +3588,17 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
           {show3DViewer ? (
             <div className="space-y-2">
               <Damper3DViewer 
+                productCategory={productCategory}
+                valveType={selectedValveTypeId}
+                valveTypeName={currentValveType.name}
+                valveSizeDn={valveSizeDn}
+                valveSizeInch={STANDARD_VALVE_DNS.find(v => v.dn === Number(valveSizeDn))?.inch || `${Math.round(valveSizeDn/25.4)}"`}
+                valvePressureRating={valvePressureRating}
+                valveEndConnection={valveEndConnection}
+                valveBodyMoc={valveBodyMoc}
+                valveTrimMoc={valveTrimMoc}
+                valveSeatMoc={valveSeatMoc}
+                valveActuator={valveActuator}
                 width={width}
                 height={height}
                 depth={depth}
@@ -2728,10 +3646,12 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
               />
               <div className="flex items-center justify-between text-[11px] text-[#64748b] px-1">
                 <span>
-                  ✓ CAD model updates dynamically when Width, Height, Depth, Blades, or Damper Model are adjusted above.
+                  ✓ CAD model updates dynamically in real-time when any dimension, blade parameter, or valve option is adjusted above.
                 </span>
                 <span className="font-mono">
-                  Scale: 1m = 1 unit • Blades: {numberOfBlades} {opposedBlades ? '(Opposed)' : '(Parallel)'} • Duct Clearance: {width - 30} × {height} mm
+                  {isValveMode
+                    ? `Valve Bore: DN${valveSizeDn} • Rating: ${valvePressureRating} • Connection: ${valveEndConnection}`
+                    : `Scale: 1m = 1 unit • Blades: ${numberOfBlades} • Clearance: ${width - 30} × ${height} mm`}
                 </span>
               </div>
             </div>
@@ -2824,102 +3744,175 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
 
 
 
+      {/* 2D Engineering Design Blueprint Uploader & Component Suggester */}
+      <TwoDDesignAnalyzer
+        onApplyComponents={handleApply2DComponents}
+        onSelectDimensions={handleSelectDimensions}
+        currentDamperType={currentDamperType}
+        currentProductCategory={productCategory}
+      />
+
+      {/* Engineering Formula Inspector & Error/Tolerance Allowance Engine */}
+      <FormulaInspector
+        formulas={customFormulas}
+        onUpdateFormula={handleUpdateFormula}
+        onResetFormulas={handleResetFormulas}
+        densityMultiplier={densityMultiplier}
+        setDensityMultiplier={setDensityMultiplier}
+        cuttingTolerancePct={cuttingTolerancePct}
+        setCuttingTolerancePct={setCuttingTolerancePct}
+        labourDivisor={labourDivisor}
+        setLabourDivisor={setLabourDivisor}
+        finishingRatePerKg={finishingRatePerKg}
+        setFinishingRatePerKg={setFinishingRatePerKg}
+        fabricationRatePerKg={fabricationRatePerKg}
+        setFabricationRatePerKg={setFabricationRatePerKg}
+        activeRates={activeRates}
+        isMultiBlade={isMultiBlade}
+        isValveMode={isValveMode}
+      />
+
       {/* TABLE 1: Complete 45-Part Fabricated Bill of Materials (Exact replicate of PDF pages 1, 3, 5) */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl shadow-sm overflow-hidden space-y-0">
-        <div className="bg-[#005daa] text-white px-5 py-3 flex items-center justify-between">
+      <div className="bg-[#FFFDFB] border border-[#E8E3D8] rounded-2xl shadow-sm overflow-hidden space-y-0">
+        <div className="bg-gradient-to-r from-[#2F4D40] via-[#3D6353] to-[#487361] text-white px-5 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2 font-bold text-xs sm:text-sm uppercase tracking-wide">
             <span>4. Fabricated Parts Cost Sheet ({currentDamperType.id === 'rack-pinion' ? 'All 45 Parts Certified Schedule' : `${currentDamperType.shortName} Proportional Schedule`})</span>
           </div>
-          <div className="text-[11px] text-blue-100 font-mono">
-            {displayLines.length} Items Configured • Rates Editable Inline
+          <div className="text-[11px] text-[#D5E5DC] font-mono">
+            {displayLines.length} Items Configured • Rates & Formulas Editable Inline
           </div>
-          <button type="button" onClick={addCustomBomLine} className="inline-flex items-center gap-1 rounded border border-white/50 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-white/10"><Plus size={14} /> Add custom line</button>
+          <button type="button" onClick={addCustomBomLine} className="inline-flex items-center gap-1 rounded border border-white/40 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-white/10 transition-colors"><Plus size={14} /> Add custom line</button>
         </div>
 
-        {calcResult?.validation_warnings?.length > 0 && <div className="space-y-1 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900">
+        {/* Live Active Formulas Status Bar */}
+        <div className="bg-[#F5F2EB] border-b border-[#E8E3D8] px-5 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-bold text-[#242826] flex items-center gap-1">
+              <Calculator className="w-3.5 h-3.5 text-[#3D6353]" />
+              Active Cost Formulas:
+            </span>
+            <span className="bg-white px-2 py-0.5 rounded border border-[#E0D9CC] font-mono text-[11px] text-[#242826] shadow-sm" title="Plate Weight Formula">
+              Plate Wt: <strong className="text-[#3D6353]">{customFormulas.plateWeight}</strong>
+            </span>
+            <span className="bg-white px-2 py-0.5 rounded border border-[#E0D9CC] font-mono text-[11px] text-[#242826] shadow-sm" title="Raw Material Cost Formula">
+              RM: <strong className="text-[#2F5241]">{customFormulas.rawMaterial}</strong>
+            </span>
+            <span className="bg-white px-2 py-0.5 rounded border border-[#E0D9CC] font-mono text-[11px] text-[#242826] shadow-sm" title="Machining & Labour Formula">
+              Labour/Mfg: <strong className="text-[#8C5D19]">{customFormulas.machiningLabour}</strong>
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {isCustomFormulasActive && (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#FEF7EB] text-[#8C5D19] border border-[#F3DACF] flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#C46346] animate-pulse"></span>
+                Customized Formulas Applied
+              </span>
+            )}
+            {isCustomFormulasActive && (
+              <button
+                type="button"
+                onClick={handleResetFormulas}
+                className="text-[11px] text-[#C46346] hover:text-[#9A3B22] font-semibold flex items-center gap-1 bg-[#FDF1EB] hover:bg-[#FBE4D8] px-2 py-0.5 rounded border border-[#F3DACF] transition-colors"
+                title="Reset formulas to factory certified standard"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset Formulas
+              </button>
+            )}
+          </div>
+        </div>
+
+        {calcResult?.validation_warnings?.length > 0 && <div className="space-y-1 border-b border-[#F3DACF] bg-[#FEF7EB] px-4 py-2 text-xs text-[#8C5D19]">
           {calcResult.validation_warnings.map((warning) => <p key={warning.rule_id} className="flex items-center gap-2"><AlertTriangle size={14} />{warning.message}</p>)}
         </div>}
 
-        {bomAdditions.length > 0 && <div className="space-y-2 border-b border-slate-200 bg-slate-50 p-3">
+        {bomAdditions.length > 0 && <div className="space-y-2 border-b border-[#E8E3D8] bg-[#FAF7F2] p-3">
           {bomAdditions.map((line, index) => <div key={index} className="grid grid-cols-2 gap-2 sm:grid-cols-5 lg:grid-cols-9">
             {[
               ['part_name', 'Part name', 'text'], ['dim_1', 'Dim 1 mm', 'number'], ['dim_2', 'Dim 2 mm', 'number'],
               ['dim_3', 'Thickness mm', 'number'], ['qty', 'Qty', 'number'], ['moc', 'MOC', 'text'],
               ['material_rate', 'Rate/kg', 'number'], ['per_piece_machining', 'Machining', 'number'],
-            ].map(([key, label, type]) => <label key={key} className="text-[10px] font-semibold uppercase text-slate-600">{label}<input type={type} className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs" value={line[key]} min={type === 'number' ? 0 : undefined} onChange={(event) => setBomAdditions((current) => current.map((item, i) => i === index ? { ...item, [key]: type === 'number' ? Number(event.target.value) : event.target.value } : item))} /></label>)}
-            <button type="button" aria-label={`Remove ${line.part_name}`} title="Remove custom line" className="self-end rounded border border-slate-300 bg-white p-2 text-slate-700 hover:bg-red-50 hover:text-red-700" onClick={() => setBomAdditions((current) => current.filter((_, i) => i !== index))}><Trash2 size={15} /></button>
+            ].map(([key, label, type]) => <label key={key} className="text-[10px] font-semibold uppercase text-[#5C6460]">{label}<input type={type} className="mt-1 w-full rounded border border-[#DDD6C8] bg-white px-2 py-1.5 text-xs focus:border-[#3D6353] focus:outline-none" value={line[key]} min={type === 'number' ? 0 : undefined} onChange={(event) => setBomAdditions((current) => current.map((item, i) => i === index ? { ...item, [key]: type === 'number' ? Number(event.target.value) : event.target.value } : item))} /></label>)}
+            <button type="button" aria-label={`Remove ${line.part_name}`} title="Remove custom line" className="self-end rounded border border-[#DDD6C8] bg-white p-2 text-[#5C6460] hover:bg-[#FDF1EB] hover:text-[#C46346]" onClick={() => setBomAdditions((current) => current.filter((_, i) => i !== index))}><Trash2 size={15} /></button>
           </div>)}
         </div>}
 
         <div className="overflow-x-auto max-h-[620px]">
           <table className="w-full text-left text-xs border-collapse">
-            <thead className="sticky top-0 bg-[#004785] text-white uppercase text-[10px] font-semibold tracking-wider z-10">
+            <thead className="sticky top-0 bg-[#284136] text-white uppercase text-[10px] font-semibold tracking-wider z-10">
               <tr>
-                <th className="px-2.5 py-2 text-center w-10 border border-blue-900">Sr.No</th>
-                <th className="px-3 py-2 border border-blue-900">Part Name</th>
-                <th className="px-2 py-2 text-center border border-blue-900" colSpan="3">SHEET SIZE / DIM</th>
-                <th className="px-2 py-2 text-center w-12 border border-blue-900">Qty</th>
-                <th className="px-2.5 py-2 text-right border border-blue-900">Total Wt (kg)</th>
-                <th className="px-2.5 py-2 text-center border border-blue-900">MOC</th>
-                <th className="px-2.5 py-2 text-right border border-blue-900 w-24 bg-blue-900">Rate (₹/kg)</th>
-                <th className="px-3 py-2 text-right border border-blue-900">RM Cost (₹)</th>
-                <th className="px-2.5 py-2 text-right border border-blue-900 w-20 bg-blue-900">LC Rate</th>
-                <th className="px-2.5 py-2 text-right border border-blue-900">LC (₹)</th>
-                <th className="px-2 py-2 text-right border border-blue-900 w-14">RC (₹)</th>
-                <th className="px-2.5 py-2 text-right border border-blue-900 w-20 bg-blue-900">MC (₹)</th>
-                <th className="px-3 py-2 text-right border border-blue-900 bg-slate-900">TOTAL MC (₹)</th>
-                <th className="px-3 py-2 text-right border border-blue-900 bg-slate-900">Line Total (₹)</th>
-                <th className="px-2 py-2 text-center border border-blue-900">Remove</th>
+                <th className="px-2.5 py-2 text-center w-10 border border-[#3A5649]">Sr.No</th>
+                <th className="px-3 py-2 border border-[#3A5649]">Part Name</th>
+                <th className="px-2 py-2 text-center border border-[#3A5649]" colSpan="3">SHEET SIZE / DIM</th>
+                <th className="px-2 py-2 text-center w-12 border border-[#3A5649]">Qty</th>
+                <th className="px-2.5 py-2 text-right border border-[#3A5649]">Total Wt (kg)</th>
+                <th className="px-2.5 py-2 text-center border border-[#3A5649]">MOC</th>
+                <th className="px-2.5 py-2 text-right border border-[#3A5649] w-24 bg-[#23382F]">Rate (₹/kg)</th>
+                <th className="px-3 py-2 text-right border border-[#3A5649]">RM Cost (₹)</th>
+                <th className="px-2.5 py-2 text-right border border-[#3A5649] w-20 bg-[#23382F]">LC Rate</th>
+                <th className="px-2.5 py-2 text-right border border-[#3A5649]">LC (₹)</th>
+                <th className="px-2 py-2 text-right border border-[#3A5649] w-14">RC (₹)</th>
+                <th className="px-2.5 py-2 text-right border border-[#3A5649] w-20 bg-[#23382F]">MC (₹)</th>
+                <th className="px-3 py-2 text-right border border-[#3A5649] bg-[#1F332A]">TOTAL MC (₹)</th>
+                <th className="px-2.5 py-2 text-right border border-[#3A5649] w-24 bg-[#563428]">± Error (₹)</th>
+                <th className="px-3 py-2 text-right border border-[#3A5649] bg-[#1F332A]">Line Total (₹)</th>
+                <th className="px-2.5 py-2 text-center border border-[#3A5649]">Remove</th>
               </tr>
-              <tr className="bg-blue-900 text-[9px] text-blue-200 font-normal">
-                <th className="border border-blue-800"></th>
-                <th className="border border-blue-800"></th>
-                <th className="px-1 py-1 text-center border border-blue-800">L / DIA</th>
-                <th className="px-1 py-1 text-center border border-blue-800">W / LENG</th>
-                <th className="px-1 py-1 text-center border border-blue-800">T</th>
-                <th className="border border-blue-800"></th>
-                <th className="border border-blue-800"></th>
-                <th className="border border-blue-800"></th>
-                <th className="border border-blue-800 text-center">Editable</th>
-                <th className="border border-blue-800"></th>
-                <th className="border border-blue-800 text-center">Editable</th>
-                <th className="border border-blue-800"></th>
-                <th className="border border-blue-800"></th>
-                <th className="border border-blue-800 text-center">Editable</th>
-                <th className="border border-blue-800"></th>
-                <th className="border border-blue-800"></th>
+              <tr className="bg-[#314E42] text-[9px] text-[#D0E2D8] font-normal">
+                <th className="border border-[#3A5649]"></th>
+                <th className="border border-[#3A5649]"></th>
+                <th className="px-1 py-1 text-center border border-[#3A5649]">L / DIA</th>
+                <th className="px-1 py-1 text-center border border-[#3A5649]">W / LENG</th>
+                <th className="px-1 py-1 text-center border border-[#3A5649]">T</th>
+                <th className="border border-[#3A5649]"></th>
+                <th className="border border-[#3A5649]"></th>
+                <th className="border border-[#3A5649]"></th>
+                <th className="border border-[#3A5649] text-center">Editable</th>
+                <th className="border border-[#3A5649]"></th>
+                <th className="border border-[#3A5649] text-center">Editable</th>
+                <th className="border border-[#3A5649]"></th>
+                <th className="border border-[#3A5649]"></th>
+                <th className="border border-[#3A5649] text-center">Editable</th>
+                <th className="border border-[#3A5649]"></th>
+                <th className="border border-[#3A5649] text-center font-bold text-[#FCD9A5]">Editable (±)</th>
+                <th className="border border-[#3A5649]"></th>
+                <th className="border border-[#3A5649] text-center">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 text-slate-800 font-sans">
-              {displayLines.map((l, index) => (
+            <tbody className="divide-y divide-[#EAE5DB] text-[#242826] font-sans">
+              {displayLines.map((l, index) => {
+                const lineIndex = l.source_line_index ?? index;
+                const edit = manualBomEdits[lineIndex] || {};
+                return (
                 <tr 
-                  key={l.sr_no} 
-                  className={`hover:bg-blue-50/60 transition-colors ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}
+                  key={`${lineIndex}-${l.sr_no ?? index}`} 
+                  className={`hover:bg-[#EEF5F1] transition-colors ${index % 2 === 0 ? 'bg-[#FFFDFB]' : 'bg-[#FAF7F2]'}`}
                 >
-                  <td className="px-2 py-1.5 text-center font-mono text-slate-500 font-medium border-r border-slate-200">
+                  <td className="px-2 py-1.5 text-center font-mono text-[#5C6460] font-medium border-r border-[#EAE5DB]">
                     {l.sr_no}
                   </td>
                   <td className="px-3 py-1.5 font-medium text-slate-900 border-r border-slate-200">
-                    {l.part_name} {(l.is_manually_edited || manualBomEdits[l.source_line_index ?? index]) && <span className="ml-1 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-bold uppercase text-amber-800">Edited</span>}
+                    {l.part_name} {(l.is_manually_edited || edit.edit_note) && <span className="ml-1 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-bold uppercase text-amber-800">Edited</span>}
                   </td>
                   {/* Dimensions L, W, T */}
                   <td className="px-1.5 py-1.5 text-right font-mono text-slate-700 border-r border-slate-200">
-                    <input aria-label={`${l.part_name} dimension 1`} className="w-20 border border-transparent bg-transparent px-1 text-right hover:border-slate-300 focus:border-blue-500 focus:bg-white" type="number" min="0" value={manualBomEdits[l.source_line_index ?? index]?.dim_1 ?? l.dim1} onChange={(e) => updateBomField(l.source_line_index ?? index, 'dim_1', Number(e.target.value))} />
+                    <input aria-label={`${l.part_name} dimension 1`} className="w-20 border border-transparent bg-transparent px-1 text-right hover:border-slate-300 focus:border-blue-500 focus:bg-white" type="number" min="0" value={edit.dim_1 ?? l.dim1} onChange={(e) => updateBomField(lineIndex, 'dim_1', readNumber(e.target.value, 0))} />
                   </td>
                   <td className="px-1.5 py-1.5 text-right font-mono text-slate-700 border-r border-slate-200">
-                    <input aria-label={`${l.part_name} dimension 2`} className="w-20 border border-transparent bg-transparent px-1 text-right hover:border-slate-300 focus:border-blue-500 focus:bg-white" type="number" min="0" value={manualBomEdits[l.source_line_index ?? index]?.dim_2 ?? l.dim2} onChange={(e) => updateBomField(l.source_line_index ?? index, 'dim_2', Number(e.target.value))} />
+                    <input aria-label={`${l.part_name} dimension 2`} className="w-20 border border-transparent bg-transparent px-1 text-right hover:border-slate-300 focus:border-blue-500 focus:bg-white" type="number" min="0" value={edit.dim_2 ?? l.dim2} onChange={(e) => updateBomField(lineIndex, 'dim_2', readNumber(e.target.value, 0))} />
                   </td>
                   <td className="px-1.5 py-1.5 text-right font-mono text-slate-700 border-r border-slate-200">
-                    {l.is_round ? '-' : <input aria-label={`${l.part_name} thickness`} className="w-14 border border-transparent bg-transparent px-1 text-right hover:border-slate-300 focus:border-blue-500 focus:bg-white" type="number" min="0" value={manualBomEdits[l.source_line_index ?? index]?.dim_3 ?? l.dim3} onChange={(e) => updateBomField(l.source_line_index ?? index, 'dim_3', Number(e.target.value))} />}
+                    {l.is_round ? '-' : <input aria-label={`${l.part_name} thickness`} className="w-14 border border-transparent bg-transparent px-1 text-right hover:border-slate-300 focus:border-blue-500 focus:bg-white" type="number" min="0" value={edit.dim_3 ?? l.dim3} onChange={(e) => updateBomField(lineIndex, 'dim_3', readNumber(e.target.value, 0))} />}
                   </td>
                   <td className="px-2 py-1.5 text-center font-mono font-bold text-slate-900 border-r border-slate-200">
-                    <input aria-label={`${l.part_name} quantity`} className="w-12 border border-transparent bg-transparent text-center hover:border-slate-300 focus:border-blue-500 focus:bg-white" type="number" min="1" step="1" value={manualBomEdits[l.source_line_index ?? index]?.qty ?? l.quantity} onChange={(e) => updateBomField(l.source_line_index ?? index, 'qty', Number(e.target.value))} />
+                    <input aria-label={`${l.part_name} quantity`} className="w-12 border border-transparent bg-transparent text-center hover:border-slate-300 focus:border-blue-500 focus:bg-white" type="number" min="1" step="1" value={edit.qty ?? l.quantity} onChange={(e) => updateBomField(lineIndex, 'qty', Math.max(1, readNumber(e.target.value, 1)))} />
                   </td>
                   <td className="px-2.5 py-1.5 text-right font-mono font-medium text-slate-800 border-r border-slate-200">
                     {(Number(l.total_weight) || 0).toFixed(1)}
                   </td>
                   <td className="px-2.5 py-1.5 text-center font-mono text-[11px] text-slate-700 border-r border-slate-200">
-                    <input aria-label={`${l.part_name} material`} className="w-20 border border-transparent bg-transparent text-center hover:border-slate-300 focus:border-blue-500 focus:bg-white" value={manualBomEdits[l.source_line_index ?? index]?.moc ?? l.moc} onChange={(e) => updateBomField(l.source_line_index ?? index, 'moc', e.target.value)} />
+                    <input aria-label={`${l.part_name} material`} className="w-20 border border-transparent bg-transparent text-center hover:border-slate-300 focus:border-blue-500 focus:bg-white" value={edit.moc ?? l.moc} onChange={(e) => updateBomField(lineIndex, 'moc', e.target.value)} />
                   </td>
 
                   {/* EDITABLE RATE (Rs/kg) */}
@@ -2927,10 +3920,13 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                     <input
                       type="number"
                       step="1"
-                      value={l.active_mat_rate}
+                      min="0"
+                      aria-label={`${l.part_name} rate per kg`}
+                      value={edit.material_rate ?? l.active_mat_rate}
                       onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 0;
-                        setLineRateOverrides(p => ({ ...p, [l.sr_no]: val }));
+                        const val = readNumber(e.target.value, 0);
+                        updateBomField(lineIndex, 'material_rate', val);
+                        setLineRateOverrides((p) => ({ ...p, [l.sr_no]: val }));
                       }}
                       className="w-20 px-1.5 py-0.5 text-right font-mono text-xs font-bold border border-slate-300 rounded bg-white text-slate-900 focus:ring-1 focus:ring-blue-600"
                     />
@@ -2949,10 +3945,13 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                       <input
                         type="number"
                         step="0.5"
-                        value={l.active_lc_rate}
+                        min="0"
+                        aria-label={`${l.part_name} labour rate`}
+                        value={edit.plate_labour_rate ?? l.active_lc_rate}
                         onChange={(e) => {
-                          const val = parseFloat(e.target.value) || 0;
-                          setLineLcRateOverrides(p => ({ ...p, [l.sr_no]: val }));
+                          const val = readNumber(e.target.value, 0);
+                          updateBomField(lineIndex, 'plate_labour_rate', val);
+                          setLineLcRateOverrides((p) => ({ ...p, [l.sr_no]: val }));
                         }}
                         className="w-16 px-1.5 py-0.5 text-right font-mono text-xs border border-slate-300 rounded bg-white text-slate-800 focus:ring-1 focus:ring-blue-600"
                       />
@@ -2974,10 +3973,13 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                     <input
                       type="number"
                       step="10"
-                      value={l.active_mc}
+                      min="0"
+                      aria-label={`${l.part_name} machining cost`}
+                      value={edit.per_piece_machining ?? l.active_mc}
                       onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 0;
-                        setLineMcOverrides(p => ({ ...p, [l.sr_no]: val }));
+                        const val = readNumber(e.target.value, 0);
+                        updateBomField(lineIndex, 'per_piece_machining', val);
+                        setLineMcOverrides((p) => ({ ...p, [l.sr_no]: val }));
                       }}
                       className="w-16 px-1.5 py-0.5 text-right font-mono text-xs border border-slate-300 rounded bg-white text-slate-900 focus:ring-1 focus:ring-blue-600"
                     />
@@ -2988,13 +3990,38 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                     {formatNumber(l.active_total_mc, 0)}
                   </td>
 
-                  {/* LINE TOTAL */}
-                  <td className="px-3 py-1.5 text-right font-mono font-bold text-blue-950 bg-slate-50/80">
-                    {formatNumber(l.active_line_total, 0)}
+                  {/* EDITABLE ERROR / TOLERANCE ALLOWANCE (±₹) */}
+                  <td className="px-1.5 py-1 text-right border-r border-slate-200 bg-amber-50/50">
+                    <input
+                      type="number"
+                      step="50"
+                      aria-label={`${l.part_name} error tolerance allowance`}
+                      placeholder="±0"
+                      value={edit.error_allowance ?? (lineErrorOverrides[l.sr_no] ?? '')}
+                      onChange={(e) => {
+                        const val = e.target.value === '' ? 0 : Number(e.target.value);
+                        updateBomField(lineIndex, 'error_allowance', val);
+                        setLineErrorOverrides((p) => ({ ...p, [l.sr_no]: val }));
+                      }}
+                      className="w-20 px-1.5 py-0.5 text-right font-mono text-xs font-bold border border-amber-300 rounded bg-white text-amber-900 focus:ring-1 focus:ring-amber-500"
+                    />
                   </td>
-                  <td className="px-2 py-1 text-center"><button type="button" title={`Remove ${l.part_name}`} aria-label={`Remove ${l.part_name}`} className="rounded p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-700" onClick={() => updateBomField(l.source_line_index ?? index, 'is_delete', true)}><Trash2 size={14} /></button></td>
+
+                  {/* LINE TOTAL */}
+                  <td className="px-1.5 py-1 text-right font-mono font-bold text-blue-950 bg-amber-50/40">
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      aria-label={`${l.part_name} line total`}
+                      value={edit.line_total ?? Math.round(Number(l.active_line_total) || 0)}
+                      onChange={(e) => updateBomField(lineIndex, 'line_total', readNumber(e.target.value, 0))}
+                      className="w-24 px-1.5 py-0.5 text-right font-mono text-xs font-bold border border-slate-300 rounded bg-white text-blue-950 focus:ring-1 focus:ring-blue-600"
+                    />
+                  </td>
+                  <td className="px-2 py-1 text-center"><button type="button" title={`Remove ${l.part_name}`} aria-label={`Remove ${l.part_name}`} className="rounded p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-700" onClick={() => updateBomField(lineIndex, 'is_delete', true)}><Trash2 size={14} /></button></td>
                 </tr>
-              ))}
+              )})}
             </tbody>
 
             {/* Subtotal Footer Row Matching Excel Sheet */}
@@ -3019,8 +4046,13 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                 <td className="px-3 py-2.5 text-right font-mono text-sm text-blue-900 bg-blue-50/80 border-r border-slate-300">
                   ₹ {formatNumber(totalMcCost, 0)}
                 </td>
+                <td className="px-2 py-2.5 text-center font-mono text-xs text-amber-900 bg-amber-100/60 border-r border-slate-300">
+                  {Object.values(lineErrorOverrides).reduce((a, b) => a + (Number(b) || 0), 0) !== 0 
+                    ? `± ₹ ${formatNumber(Object.values(lineErrorOverrides).reduce((a, b) => a + (Number(b) || 0), 0), 0)}` 
+                    : '-'}
+                </td>
                 <td className="px-3 py-2.5 text-right font-mono text-sm text-slate-900 bg-slate-300">
-                  ₹ {formatNumber(totalRmCost + totalMcCost, 0)}
+                  ₹ {formatNumber(sheetLineTotal, 0)}
                 </td>
               </tr>
             </tfoot>
@@ -3031,17 +4063,17 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
       {/* TABLES 2 & 3: Bought-Out Components & Automation Breakdown (Exact replicate of PDF Page 2) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Left Card: Bought-Out Components Table */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl shadow-sm overflow-hidden flex flex-col justify-between">
+        <div className="bg-[#FFFDFB] border border-[#E8E3D8] rounded-2xl shadow-sm overflow-hidden flex flex-col justify-between">
           <div>
-            <div className="bg-[#005daa] text-white px-5 py-3 flex items-center justify-between">
+            <div className="bg-gradient-to-r from-[#2F4D40] via-[#3D6353] to-[#487361] text-white px-5 py-3 flex items-center justify-between">
               <span className="font-bold text-xs sm:text-sm uppercase tracking-wide">
                 5. Bought-Out & Finishing Breakdown
               </span>
-              <span className="text-[11px] text-blue-100 font-mono">Rates Editable</span>
+              <span className="text-[11px] text-[#D5E5DC] font-mono">Rates Editable</span>
             </div>
 
             <table className="w-full text-xs text-left">
-              <thead className="bg-slate-100 text-slate-600 font-semibold uppercase text-[10px] border-b border-slate-200">
+              <thead className="bg-[#F5F2EB] text-[#5C6460] font-semibold uppercase text-[10px] border-b border-[#E8E3D8]">
                 <tr>
                   <th className="px-3 py-2 w-12 text-center">Sr.No</th>
                   <th className="px-3 py-2">Description</th>
@@ -3255,11 +4287,11 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
           </div>
 
           {/* Damper Basic Cost Highlight Row */}
-          <div className="bg-emerald-50 border-t-2 border-emerald-400 px-4 py-3 flex items-center justify-between">
-            <span className="font-bold text-xs uppercase tracking-wide text-emerald-950">
+          <div className="bg-[#EEF5F1] border-t-2 border-[#3D6353] px-4 py-3 flex items-center justify-between">
+            <span className="font-bold text-xs uppercase tracking-wide text-[#2F4D40]">
               Damper Basic Cost
             </span>
-            <span className="font-mono font-extrabold text-base text-emerald-900">
+            <span className="font-mono font-extrabold text-base text-[#1E3B2E]">
               ₹ {formatNumber(damperBasicCost, 0)}
             </span>
           </div>
@@ -3268,17 +4300,17 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
         {/* Right Card: Automation Breakdown & Commercial Totals */}
         <div className="space-y-6 flex flex-col justify-between">
           {/* Automation Table */}
-          <div className="bg-white border border-slate-200/90 rounded-2xl shadow-sm overflow-hidden flex flex-col justify-between">
+          <div className="bg-[#FFFDFB] border border-[#E8E3D8] rounded-2xl shadow-sm overflow-hidden flex flex-col justify-between">
             <div>
-              <div className="bg-[#005daa] text-white px-5 py-3 flex items-center justify-between">
+              <div className="bg-gradient-to-r from-[#2F4D40] via-[#3D6353] to-[#487361] text-white px-5 py-3 flex items-center justify-between">
                 <span className="font-bold text-xs sm:text-sm uppercase tracking-wide">
                   6. Damper Automation Cost
                 </span>
-                <span className="text-[11px] text-blue-100 font-mono">Rates Editable</span>
+                <span className="text-[11px] text-[#D5E5DC] font-mono">Rates Editable</span>
               </div>
 
               <table className="w-full text-xs text-left">
-                <thead className="bg-slate-100 text-[#3b475d] font-semibold uppercase text-[10px] border-b border-slate-200">
+                <thead className="bg-[#F5F2EB] text-[#5C6460] font-semibold uppercase text-[10px] border-b border-[#E8E3D8]">
                   <tr>
                     <th className="px-3 py-2 w-12 text-center">Sr.No</th>
                     <th className="px-3 py-2">Description</th>
@@ -3384,34 +4416,34 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
             </div>
 
             {/* Automation Cost Highlight Row */}
-            <div className="bg-[#eff8fe] border-t-2 border-[#005daa] px-4 py-3 flex items-center justify-between">
-              <span className="font-bold text-xs uppercase tracking-wide text-[#005daa]">
+            <div className="bg-[#EEF5F1] border-t-2 border-[#3D6353] px-4 py-3 flex items-center justify-between">
+              <span className="font-bold text-xs uppercase tracking-wide text-[#2F4D40]">
                 Damper Automation Cost
               </span>
-              <span className="font-mono font-extrabold text-base text-[#005daa]">
+              <span className="font-mono font-extrabold text-base text-[#1E3B2E]">
                 ₹ {formatNumber(damperAutomationCost, 0)}
               </span>
             </div>
           </div>
 
           {/* Bottom-Line Commercial Summary Card */}
-          <div className="bg-white border-2 border-slate-200/90 rounded-2xl p-5 shadow-sm space-y-4">
-            <div className="border-b border-slate-100 pb-2.5 flex items-center justify-between">
-              <span className="font-bold text-sm text-[#212529] uppercase tracking-wide flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-[#f89030]"></span>
+          <div className="bg-[#FFFDFB] border-2 border-[#E8E3D8] rounded-2xl p-5 shadow-sm space-y-4">
+            <div className="border-b border-[#EAE5DB] pb-2.5 flex items-center justify-between">
+              <span className="font-bold text-sm text-[#242826] uppercase tracking-wide flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#C46346]"></span>
                 <span>7. Commercial Summary & Quotation</span>
               </span>
-              <span className="text-xs text-[#64748b] font-mono">
+              <span className="text-xs text-[#5C6460] font-mono">
                 Qty: {quantity} {quantity > 1 ? 'Units' : 'Unit'}
               </span>
             </div>
 
             <div className="space-y-2.5 text-xs">
               {/* Fabrication line */}
-              <div className="flex items-center justify-between text-slate-700">
+              <div className="flex items-center justify-between text-[#242826]">
                 <div className="flex items-center gap-1.5">
                   <span className="font-medium">Fabrication Cost</span>
-                  <span className="text-[11px] text-[#64748b]">
+                  <span className="text-[11px] text-[#5C6460]">
                     ({(Number(totalWeight) || 0).toFixed(1)} kg × ₹{fabRate}/kg)
                   </span>
                 </div>
@@ -3419,25 +4451,25 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
               </div>
 
               {/* Damper Basic Cost */}
-              <div className="flex items-center justify-between text-slate-700">
+              <div className="flex items-center justify-between text-[#242826]">
                 <span className="font-medium">Damper Basic Cost:</span>
                 <span className="font-mono font-semibold">₹ {formatNumber(damperBasicCost, 0)}</span>
               </div>
 
               {/* Automation Cost */}
-              <div className="flex items-center justify-between text-slate-700">
+              <div className="flex items-center justify-between text-[#242826]">
                 <span className="font-medium">Automation Cost:</span>
                 <span className="font-mono font-semibold">₹ {formatNumber(damperAutomationCost, 0)}</span>
               </div>
 
               {/* Total Cost */}
-              <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-slate-900 font-bold text-sm">
+              <div className="pt-2 border-t border-[#EAE5DB] flex items-center justify-between text-[#242826] font-bold text-sm">
                 <span>Total Net Cost:</span>
-                <span className="font-mono text-[#005daa]">₹ {formatNumber(totalDamperCost, 0)}</span>
+                <span className="font-mono text-[#2F4D40]">₹ {formatNumber(totalDamperCost, 0)}</span>
               </div>
 
               {/* Markup Factor */}
-              <div className="flex items-center justify-between text-[#005daa] font-semibold">
+              <div className="flex items-center justify-between text-[#2F4D40] font-semibold">
                 <div className="flex items-center gap-1.5">
                   <span>Markup Multiplier:</span>
                   <input
@@ -3445,19 +4477,19 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                     step="0.01"
                     value={markupMultiplier}
                     onChange={(e) => setMarkupMultiplier(parseFloat(e.target.value) || 1.10)}
-                    className="w-16 px-1.5 py-0.5 text-right font-mono text-xs border border-blue-400 rounded bg-[#eff8fe] text-[#005daa] font-bold"
+                    className="w-16 px-1.5 py-0.5 text-right font-mono text-xs border border-[#3D6353] rounded bg-[#EEF5F1] text-[#2F4D40] font-bold"
                   />
                 </div>
-                <span className="font-mono text-[#f89030]">
+                <span className="font-mono text-[#C46346]">
                   +₹ {formatNumber(unitQuotedPrice - totalDamperCost, 0)}
                 </span>
               </div>
             </div>
 
-            {/* Quoted Price Large Badge - Cincom Royal Blue gradient */}
-            <div className="bg-gradient-to-r from-[#005daa] to-[#004785] text-white p-4 rounded-xl flex items-center justify-between shadow-md">
+            {/* Quoted Price Large Badge - Pastel Sage Gradient */}
+            <div className="bg-gradient-to-r from-[#2F4D40] via-[#3D6353] to-[#487361] text-white p-4 rounded-xl flex items-center justify-between shadow-md">
               <div>
-                <div className="text-[10px] font-bold uppercase tracking-wider text-blue-200">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[#D5E5DC]">
                   Unit Quoted Price
                 </div>
                 <div className="text-xl sm:text-2xl font-black font-mono mt-0.5 text-white">
@@ -3465,11 +4497,11 @@ export default function NewQuote({ setView, setSelectedQuoteId, user }) {
                 </div>
               </div>
               {quantity > 1 && (
-                <div className="text-right pl-4 border-l border-blue-400/30">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-blue-200">
+                <div className="text-right pl-4 border-l border-white/20">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#D5E5DC]">
                     Batch Total ({quantity} Units)
                   </div>
-                  <div className="text-lg sm:text-xl font-black font-mono mt-0.5 text-[#ffcc80]">
+                  <div className="text-lg sm:text-xl font-black font-mono mt-0.5 text-[#FCD9A5]">
                     {formatINR(batchQuotedPrice)}
                   </div>
                 </div>

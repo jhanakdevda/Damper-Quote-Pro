@@ -107,19 +107,47 @@ export const quotesApi = {
     const res = await apiClient.delete(`/quotes/${quoteId}`);
     return res.data;
   },
-  downloadPdf: (quoteId) => {
-    return apiClient.get(`/quotes/${quoteId}/pdf`, { responseType: 'blob' }).then((res) => {
+  downloadPdf: (quoteIdOrData) => {
+    if (typeof quoteIdOrData === 'object' && quoteIdOrData !== null) {
+      return apiClient.post('/quotes/export-pdf', quoteIdOrData, { responseType: 'blob' }).then((res) => {
+        const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+        const link = document.createElement('a');
+        link.href = url;
+        const qNum = quoteIdOrData.quote_number || 'Live_Quotation';
+        link.setAttribute('download', `Quotation_${qNum}.pdf`);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      });
+    }
+    return apiClient.get(`/quotes/${quoteIdOrData}/pdf`, { responseType: 'blob' }).then((res) => {
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `Quotation_${quoteId}.pdf`);
+      link.setAttribute('download', `Quotation_${quoteIdOrData}.pdf`);
       document.body.appendChild(link);
       link.click();
       link.remove();
     });
   },
-  downloadExcel: (quoteId) => {
-    return apiClient.get(`/quotes/${quoteId}/excel`, { responseType: 'blob' }).then((res) => {
+  downloadExcel: (quoteIdOrData) => {
+    if (typeof quoteIdOrData === 'object' && quoteIdOrData !== null) {
+      return apiClient.post('/quotes/export-excel', quoteIdOrData, { responseType: 'blob' }).then((res) => {
+        const url = window.URL.createObjectURL(
+          new Blob([res.data], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          })
+        );
+        const link = document.createElement('a');
+        link.href = url;
+        const qNum = quoteIdOrData.quote_number || 'Live_CostSheet';
+        link.setAttribute('download', `CostSheet_${qNum}.xlsx`);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      });
+    }
+    return apiClient.get(`/quotes/${quoteIdOrData}/excel`, { responseType: 'blob' }).then((res) => {
       const url = window.URL.createObjectURL(
         new Blob([res.data], {
           type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -127,7 +155,7 @@ export const quotesApi = {
       );
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `CostSheet_${quoteId}.xlsx`);
+      link.setAttribute('download', `CostSheet_${quoteIdOrData}.xlsx`);
       document.body.appendChild(link);
       link.click();
       link.remove();
